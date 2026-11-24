@@ -17,7 +17,9 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
 const roadRenderer = L.canvas({ padding: 0.5 }); // canvas: thousands of road pieces without SVG DOM cost
-let layer = L.layerGroup().addTo(map);
+let layer = L.layerGroup().addTo(map);          // coloured speed pieces / cells
+let greyLayer = L.layerGroup().addTo(map);      // grey no-data network (persistent across time changes)
+let renderedGreyKey = "", lastRender = { key: "", res: null }, lastRoadsKey = "";
 let controller = null;
 const roadsCache = new Map();  // tile-range key -> road index (LRU, bounded below)
 const pointsCache = new Map(); // "from|to|bbox|max" -> raw points for that exact window+viewport (LRU)
@@ -229,6 +231,7 @@ async function fetchRoads(bb, signal, quiet = false) {
   const tiles = [];
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) tiles.push([x, y]);
   const key = `${Z}:${x0}-${x1}:${y0}-${y1}`; // cache by tile range, so small pans/return visits reuse roads
+  lastRoadsKey = key;
   if (roadsCache.has(key)) { const hit = roadsCache.get(key); cacheSet(roadsCache, key, hit, 4); return hit; }
   const ways = [];
   for (let i = 0; i < tiles.length; i += 8) { // parallel batches of 8
@@ -245,36 +248,55 @@ async function fetchRoads(bb, signal, quiet = false) {
   return index;
 }
 
-function renderRoads(pts, roadData) {
-  const { segments, buckets, lat0 } = roadData;
-  for (const s of segments) { s.sum = 0; s.n = 0; s.vals = []; }
-  let matched = 0;
-  for (const p of pts) {
-    const [x, y] = toXY(p.lat, p.lon, lat0);
-    let best = null, bestD = SNAP_M;
-    for (let gx = Math.floor(x / 60) - 1; gx <= Math.floor(x / 60) + 1; gx++)
-      for (let gy = Math.floor(y / 60) - 1; gy <= Math.floor(y / 60) + 1; gy++)
-        for (const s of buckets.get(`${gx},${gy}`) || []) {
-          const { d } = distToSeg(x, y, s.xy[0], s.xy[1], s.xy[2], s.xy[3]);
-          if (d < bestD) { bestD = d; best = s; }
-        }
-    if (best) { best.sum += p.v; best.n++; best.vals.push(p.v); matched++; }
-  }
-  const min = +$("minSamples").value, shown = segments.filter(s => s.n >= min);
-  if ($("showNoData").checked) { // complete road network in grey; NOT green — green means >40 km/h here
-    for (const s of segments)
-      L.polyline(s.latlngs, { renderer: roadRenderer, color: "#646c74", weight: 1.7, opacity: .85 })
-        .bindPopup(`<b>${s.name}</b> (${s.highway})<br>No bus samples in this window`).addTo(layer);
-  }
-  for (const s of shown) {
-    const avg = s.sum / s.n;
-    L.polyline(s.latlngs, { renderer: roadRenderer, color: color(avg), weight: 2.5 + Math.min(6, Math.log2(s.n + 1)), opacity: .95 })
-      .bindPopup(`<b>${s.name}</b> (${s.highway})<br>Avg ${avg.toFixed(1)} km/h · median ${median(s.vals).toFixed(1)} km/h<br>${s.n} samples`).addTo(layer);
-  }
-  return { matched, units: shown.length, aggregates: shown.map(s => ({ label: s.name, avg: s.sum / s.n, n: s.n })) };
+const yieldFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+let currentWorker = null;
+
+// Snapping runs in worker.js (off the main thread). Falls back to a clear error
+// rather than ever running the heavy loop on the UI thread.
+function aggregateInWorker(pts, roadData, signal) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try { worker = new Worker("worker.js"); } catch (e) { reject(e); return; }
+    currentWorker = worker;
+    const cleanup = () => { worker.terminate(); if (currentWorker === worker) currentWorker = null; };
+    worker.onmessage = (e) => {
+      if (e.data.type === "progress") setStatus(`Snapping points to roads… ${e.data.done}/${e.data.total}`);
+      else { cleanup(); resolve(e.data); }
+    };
+    worker.onerror = (e) => { cleanup(); reject(new Error("Worker failed: " + e.message)); };
+    signal?.addEventListener("abort", () => { cleanup(); reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+    const { segments, lat0 } = roadData;
+    worker.postMessage({
+      minSamples: +$("minSamples").value, snapM: SNAP_M,
+      pts: pts.map(p => { const [x, y] = toXY(p.lat, p.lon, lat0); return { x, y, v: p.v }; }),
+      segments: segments.map(s => ({ name: s.name, highway: s.highway, latlngs: s.latlngs, xy: s.xy })),
+    });
+  });
 }
 
-function renderAggregates(pts, mode) {
+async function renderRoads(pts, roadData, signal) {
+  const { segments } = roadData;
+  // Grey network persists across loads: only (re)drawn when the road set (tile range) changed
+  if ($("showNoData").checked) {
+    if (renderedGreyKey !== lastRoadsKey) {
+      greyLayer.clearLayers();
+      L.polyline(segments.map(s => s.latlngs), { renderer: roadRenderer, color: "#646c74", weight: 1.7, opacity: .85 }).addTo(greyLayer);
+      renderedGreyKey = lastRoadsKey;
+    }
+  } else { greyLayer.clearLayers(); renderedGreyKey = ""; }
+  setStatus("Snapping points to roads (worker)…");
+  const { matched, shown } = await aggregateInWorker(pts, roadData, signal);
+  // Add coloured pieces in per-frame chunks so the tab stays responsive while drawing
+  for (let i = 0; i < shown.length; i += 250) {
+    for (const s of shown.slice(i, i + 250))
+      L.polyline(s.latlngs, { renderer: roadRenderer, color: color(s.avg), weight: 2.5 + Math.min(6, Math.log2(s.n + 1)), opacity: .95 })
+        .bindPopup(`<b>${s.name}</b> (${s.highway})<br>Avg ${s.avg.toFixed(1)} km/h · median ${s.med.toFixed(1)} km/h<br>${s.n} samples`).addTo(layer);
+    if (i + 250 < shown.length) { setStatus(`Drawing road pieces… ${i + 250}/${shown.length}`); await yieldFrame(); }
+  }
+  return { matched, units: shown.length, aggregates: shown.map(s => ({ label: s.name, avg: s.avg, n: s.n })) };
+}
+
+async function renderAggregates(pts, mode) {
   const min = +$("minSamples").value, cells = new Map();
   for (const p of pts) {
     const k = mode === "grid" ? `${Math.round(p.lat * 1000)},${Math.round(p.lon * 1000)}` : `${p.lat},${p.lon}`;
@@ -282,13 +304,15 @@ function renderAggregates(pts, mode) {
     c.sum += p.v; c.n++; c.vals.push(p.v);
   }
   const shown = [...cells.values()].filter(c => c.n >= min), aggregates = [];
-  for (const c of shown) {
+  for (let ci = 0; ci < shown.length; ci++) {
+    const c = shown[ci];
     const avg = c.sum / c.n; aggregates.push({ label: `${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`, avg, n: c.n });
     const marker = mode === "grid"
       ? L.rectangle([[c.lat - .0005, c.lon - .0005], [c.lat + .0005, c.lon + .0005]], { color: color(avg), weight: 1, fillColor: color(avg), fillOpacity: .55 })
       : L.circleMarker([c.lat, c.lon], { radius: 4, color: color(avg), fillColor: color(avg), fillOpacity: .8 });
     marker.bindPopup(`Avg ${avg.toFixed(1)} km/h · median ${median(c.vals).toFixed(1)} km/h<br>${c.n} samples`).addTo(layer);
     if (mode === "points" && layer.getLayers().length > 3000) break;
+    if (ci % 400 === 399) await yieldFrame();
   }
   return { matched: pts.length, units: shown.length, aggregates };
 }
@@ -321,7 +345,7 @@ let activeLoadKey = "";
 async function load() {
   if (loading) { if (loadKey() !== activeLoadKey) pendingReload = true; return; } // queue only real changes
   loading = true; activeLoadKey = loadKey();
-  controller = new AbortController(); $("load").classList.add("loading"); $("cancel").disabled = false; layer.clearLayers();
+  controller = new AbortController(); $("load").classList.add("loading"); $("cancel").disabled = false; // layers cleared only when actually re-rendering (see renderKey check)
   setProgress(2); $("histSection").hidden = true;
   loadStarted = Date.now(); clearInterval(progressTimer);
   progressTimer = setInterval(() => setStatus(statusText), 1000); // tick the elapsed counter in the panel
@@ -334,15 +358,21 @@ async function load() {
     const pts = await fetchPoints(bb, controller.signal);
     if (!pts.length) throw new Error("No points in this window/bounds. Try a weekday 07:00–09:00 window, or zoom out.");
     setStatus(mode === "roads" ? "Fetching OSM roads…" : "Aggregating…");
-    let res, effectiveMode = mode;
-    if (mode === "roads") {
-      try { res = renderRoads(pts, await roadsPromise); }
-      catch (e) { // Overpass is a free, capacity-limited service — degrade to grid instead of failing the whole view
-        if (e.name === "AbortError") throw e;
-        effectiveMode = "grid"; setStatus(`${e.message} Falling back to grid.`);
-        res = renderAggregates(pts, "grid");
-      }
-    } else res = renderAggregates(pts, mode);
+    let res, effectiveMode = mode, renderCacheHit = false;
+    const roadsIndex = mode === "roads" ? await roadsPromise.catch(e => e) : null;
+    const renderKey = `${activeLoadKey}|${mode}|${mode === "roads" ? lastRoadsKey : ""}|${map.getZoom()}`;
+    if (lastRender.key === renderKey && lastRender.res) {
+      res = lastRender.res; renderCacheHit = true; // identical window+viewport+settings: keep the drawing as-is
+      if (roadsIndex instanceof Error && mode === "roads") { /* cached render exists; ignore road refetch error */ }
+    } else if (mode === "roads") {
+      if (roadsIndex instanceof Error) { // road tiles failed — degrade to grid instead of failing the whole view
+        effectiveMode = "grid"; setStatus(`${roadsIndex.message} Falling back to grid.`);
+        greyLayer.clearLayers(); renderedGreyKey = ""; layer.clearLayers();
+        res = await renderAggregates(pts, "grid");
+      } else { layer.clearLayers(); res = await renderRoads(pts, roadsIndex, controller.signal); }
+    } else { greyLayer.clearLayers(); renderedGreyKey = ""; layer.clearLayers(); res = await renderAggregates(pts, mode); }
+    if (!renderCacheHit) lastRender = { key: renderKey, res };
+    else lastRender.res = res;
     setProgress(96);
     // small histogram of segment/cell average speeds, coloured to match the map legend
     const bins = [[0, 8, "<8"], [8, 15, "8–15"], [15, 25, "15–25"], [25, 35, "25–35"], [35, Infinity, ">35"]];
@@ -354,7 +384,7 @@ async function load() {
     loadStarted = 0; // stop progress writer before rendering final stats
     const all = pts.map(p => p.v);
     $("stats").innerHTML = `<b>${pts.length.toLocaleString()}</b> points · <b>${res.matched.toLocaleString()}</b> used (${(100 * res.matched / pts.length).toFixed(0)}%) · <b>${res.units.toLocaleString()}</b> ${effectiveMode === "roads" ? "road pieces" : "cells"} shown<br>` +
-      `Overall avg <b>${(all.reduce((a, b) => a + b, 0) / all.length).toFixed(1)} km/h</b> · median <b>${median(all).toFixed(1)} km/h</b>${effectiveMode !== mode ? " · shown as grid (road fallback)" : ""}${pointsCacheHit ? " · <span class=\"hint\">points from cache</span>" : ""}${fetchCapped ? "<br><span class=\"hint\">Point cap reached for this viewport — zoom in or raise “Max points” for full coverage.</span>" : ""}`;
+      `Overall avg <b>${(all.reduce((a, b) => a + b, 0) / all.length).toFixed(1)} km/h</b> · median <b>${median(all).toFixed(1)} km/h</b>${effectiveMode !== mode ? " · shown as grid (road fallback)" : ""}${pointsCacheHit ? " · <span class=\"hint\">points from cache</span>" : ""}${renderCacheHit ? " · <span class=\"hint\">rendering reused (not redrawn)</span>" : ""}${fetchCapped ? "<br><span class=\"hint\">Point cap reached for this viewport — zoom in or raise “Max points” for full coverage.</span>" : ""}`;
     setStatus(`Done — ${$("date").value} ${$("from").value}–${$("to").value} (Asia/Jerusalem), viewport bbox`);
   } catch (e) {
     if (e.name !== "AbortError") { loadStarted = 0; setStatus(`Error: ${e.message}`); $("stats").textContent = e.message; }
