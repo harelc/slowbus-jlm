@@ -102,12 +102,17 @@ class ClockSoundtrack {
     this.master = this.ctx.createGain();
     this.master.gain.value = this.muted ? 0 : this.volume;
 
+    // Activity-proportional bus-count gain (scales smoothly from hushed 0.08 at 0 buses -> 1.0 at peak!)
+    this.activityGain = this.ctx.createGain();
+    this.activityGain.gain.value = 0.25;
+
     const comp = this.ctx.createDynamicsCompressor();
     comp.threshold.value = -16;
     comp.ratio.value = 3.0;
     comp.attack.value = 0.008;
     comp.release.value = 0.18;
 
+    this.activityGain.connect(this.master);
     this.master.connect(comp);
     comp.connect(this.ctx.destination);
 
@@ -129,7 +134,7 @@ class ClockSoundtrack {
     delayFilter.connect(this.delayFeedback);
     this.delayFeedback.connect(this.delayL);
     delayFilter.connect(this.delayWet);
-    this.delayWet.connect(this.master);
+    this.delayWet.connect(this.activityGain);
 
     // Very short soft wooden impulse for gentle clock escapement
     const len = Math.floor(this.ctx.sampleRate * 0.022);
@@ -159,7 +164,11 @@ class ClockSoundtrack {
   updateAtmosphere(daylight, intensity, active, minuteOfDay = 0, isShabbat = false) {
     if (!this.started) return;
     const now = this.ctx.currentTime;
-    const targetWet = 0.30 - daylight * 0.08;
+    const clampedI = Math.max(0, Math.min(1, intensity));
+    // Overall loudness scales directly with active bus count (0 buses -> hushed 0.08, peak -> 1.0)
+    const targetAct = active ? (0.08 + 0.92 * Math.pow(clampedI, 0.72)) : 0.08;
+    this.activityGain.gain.setTargetAtTime(targetAct, now, 0.18);
+    const targetWet = 0.28 - daylight * 0.06 + clampedI * 0.06;
     this.delayWet.gain.setTargetAtTime(Math.max(0.14, targetWet), now, 0.30);
 
     // Choose clean harmonic voicing for current time of day (zero continuous gliding oscillators!)
@@ -178,10 +187,14 @@ class ClockSoundtrack {
   }
 
   playFeltChord(intensity) {
+    if (intensity < 0.015) return; // near-zero buses -> serene silence
     const now = this.ctx.currentTime;
-    const dur = 2.1;
-    const baseAmp = 0.022 + intensity * 0.018;
-    this.currentChord.forEach((f, idx) => {
+    const dur = 1.9 + intensity * 0.5;
+    const baseAmp = 0.012 + intensity * 0.036;
+    // Fewer chord voices when quiet, full lush 4-note voicing as buses build up
+    const voiceCount = intensity < 0.12 ? 2 : intensity < 0.35 ? 3 : this.currentChord.length;
+    for (let idx = 0; idx < voiceCount; idx++) {
+      const f = this.currentChord[idx];
       const osc = this.ctx.createOscillator();
       const g = this.ctx.createGain();
       osc.type = "sine";
@@ -191,17 +204,20 @@ class ClockSoundtrack {
       g.gain.linearRampToValueAtTime(baseAmp / (1 + idx * 0.25), t0 + 0.055);
       g.gain.exponentialRampToValueAtTime(0.0003, t0 + dur);
       osc.connect(g);
-      g.connect(this.master);
+      g.connect(this.activityGain);
       g.connect(this.delayL);
       osc.start(t0);
       osc.stop(t0 + dur + 0.05);
-    });
+    }
   }
 
   tick(intensity = 0.5, isSubTick = false) {
     if (!this.started || this.muted) return;
     const now = this.ctx.currentTime;
     const isTick = (this.tickParity++ % 2 === 0);
+
+    // At 0 active buses (deep Shabbat / empty night), keep only a faint half-time clock pulse
+    if (intensity < 0.01 && (!isTick || isSubTick)) return;
 
     // 1) Soft damped wooden clock pulse tuned to D5 / A4
     const osc = this.ctx.createOscillator();
@@ -210,12 +226,12 @@ class ClockSoundtrack {
     const f0 = isSubTick ? 880 : (isTick ? 587.33 : 440.00);
     osc.frequency.setValueAtTime(f0, now);
     osc.frequency.exponentialRampToValueAtTime(f0 * 0.72, now + 0.032);
-    const amp = isSubTick ? (0.022 + intensity * 0.025) : (0.060 + intensity * 0.048);
+    const amp = isSubTick ? (0.012 + intensity * 0.038) : (0.032 + intensity * 0.082);
     og.gain.setValueAtTime(0.0001, now);
     og.gain.linearRampToValueAtTime(amp, now + 0.003);
     og.gain.exponentialRampToValueAtTime(0.0004, now + (isSubTick ? 0.045 : 0.075));
     osc.connect(og);
-    og.connect(this.master);
+    og.connect(this.activityGain);
     if (!isSubTick) og.connect(this.delayL);
     osc.start(now);
     osc.stop(now + 0.085);
@@ -229,9 +245,9 @@ class ClockSoundtrack {
       bp.frequency.value = isTick ? 1900 : 1450;
       bp.Q.value = 3.2;
       const ng = this.ctx.createGain();
-      ng.gain.setValueAtTime(0.038 + intensity * 0.032, now);
+      ng.gain.setValueAtTime(0.016 + intensity * 0.056, now);
       ng.gain.exponentialRampToValueAtTime(0.0005, now + 0.020);
-      src.connect(bp); bp.connect(ng); ng.connect(this.master);
+      src.connect(bp); bp.connect(ng); ng.connect(this.activityGain);
       src.start(now);
 
       // Soft decaying harmonic chord every 4 main beats (pure & clean, no continuous hum!)
@@ -240,8 +256,13 @@ class ClockSoundtrack {
       }
     }
 
-    // 2) Delicate D-Dorian felt-piano / celesta arpeggio notes on main beats
-    if (!isSubTick && (intensity > 0.12 || this.arpStep % 2 === 0)) {
+    // 2) Delicate D-Dorian felt-piano / celesta arpeggio notes scaled by active bus density
+    const playArp = !isSubTick && (
+      intensity > 0.22 ||
+      (intensity > 0.06 && this.arpStep % 2 === 0) ||
+      (intensity > 0.015 && this.arpStep % 4 === 0)
+    );
+    if (playArp) {
       const scale = [293.66, 329.63, 349.23, 440.00, 523.25, 587.33, 659.25, 783.99];
       const pattern = [0, 3, 5, 4, 2, 3, 6, 5, 1, 3, 4, 7, 5, 3, 2, 0];
       const noteFreq = scale[pattern[this.arpStep++ % pattern.length]];
@@ -253,28 +274,31 @@ class ClockSoundtrack {
       overtone.type = "sine";
       pluck.frequency.value = noteFreq;
       overtone.frequency.value = noteFreq * 2;
-      const pAmp = 0.026 + intensity * 0.038;
+      const pAmp = 0.012 + intensity * 0.058;
       pg.gain.setValueAtTime(0.0001, now);
       pg.gain.linearRampToValueAtTime(pAmp, now + 0.012);
       pg.gain.exponentialRampToValueAtTime(0.0004, now + 0.55);
-      og2.gain.value = 0.14;
+      og2.gain.value = 0.06 + intensity * 0.18;
       pluck.connect(pg);
       overtone.connect(og2); og2.connect(pg);
-      pg.connect(this.master);
+      pg.connect(this.activityGain);
       pg.connect(this.delayL);
       pluck.start(now); overtone.start(now);
       pluck.stop(now + 0.58); overtone.stop(now + 0.58);
+    } else if (!isSubTick) {
+      this.arpStep++;
     }
   }
 
-  chime(kind = "hour") {
+  chime(kind = "hour", intensity = 0.5) {
     if (!this.started || this.muted) return;
     const now = this.ctx.currentTime;
     const freqs = kind === "major" ? [293.66, 440.00, 523.25, 659.25] // Dm9 bloom
                 : kind === "shabbat" ? [220.00, 293.66, 329.63, 440.00] // Asus4 calm
                 : [440.00, 587.33];
     const dur = kind === "hour" ? 0.95 : 2.4;
-    const amp = kind === "hour" ? 0.032 : 0.072;
+    const scaleAmp = kind === "shabbat" ? 0.75 : (0.35 + 0.65 * Math.max(0, Math.min(1, intensity)));
+    const amp = (kind === "hour" ? 0.032 : 0.072) * scaleAmp;
 
     freqs.forEach((f, idx) => {
       const osc = this.ctx.createOscillator();
@@ -286,7 +310,7 @@ class ClockSoundtrack {
       g.gain.linearRampToValueAtTime(amp / (1 + idx * 0.35), t0 + 0.025);
       g.gain.exponentialRampToValueAtTime(0.0004, t0 + dur);
       osc.connect(g);
-      g.connect(this.master);
+      g.connect(this.activityGain);
       g.connect(this.delayL);
       osc.start(t0);
       osc.stop(t0 + dur + 0.05);
@@ -2572,9 +2596,9 @@ function renderFrame(p, dt) {
     if (absHour !== lastHourMark) {
       lastHourMark = absHour;
       const h = Math.floor(state.minuteOfDay / 60);
-      if (state.dayIdx === 5 && h === 16) audio.chime("shabbat");
-      else if (h === 0 || h === 6 || h === 12 || h === 17) audio.chime("major");
-      else if (viewCount <= 72 && h % 3 === 0) audio.chime("hour");
+      if (state.dayIdx === 5 && h === 16) audio.chime("shabbat", intensity);
+      else if (h === 0 || h === 6 || h === 12 || h === 17) audio.chime("major", intensity);
+      else if (viewCount <= 72 && h % 3 === 0) audio.chime("hour", intensity);
     }
   } else {
     audio.updateAtmosphere(solar.daylight, intensity, false, state.minuteOfDay, isShabbat);
