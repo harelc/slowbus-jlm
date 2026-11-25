@@ -41,7 +41,25 @@ dialog::backdrop{background:rgba(15,35,50,.45);backdrop-filter:blur(3px)}
 dialog h2{font-size:1.05rem;text-transform:none;letter-spacing:0;color:#0a3552;margin-top:0}
 dialog ol{padding-left:1.2rem;display:flex;flex-direction:column;gap:.45rem}
 dialog button{margin-top:.6rem;padding:.55rem 1.1rem}
-@media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:auto 62vh;height:auto} #status{display:none}}
+button,select,input,a{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+@media(max-width:760px){
+  header{flex-wrap:wrap;padding:.6rem .8rem}
+  header h1{font-size:1rem}
+  header p{font-size:.75rem}
+  #status{display:none}
+  /* Map first (it auto-loads on open); controls scroll below it */
+  main{display:flex;flex-direction:column;height:auto}
+  #map{order:-1;flex:none;height:54dvh;min-height:300px}
+  #panel{overflow:visible;border-right:0;border-top:1px solid #e1e7ec;padding:.9rem .85rem 1.4rem}
+  /* 16px input text stops iOS Safari auto-zoom on focus; 44px targets (WCAG 2.5.8) */
+  #panel input,#panel select{font-size:16px;min-height:44px}
+  #panel input[type=checkbox]{min-height:0}
+  button,.chip{min-height:44px}
+  button.mini{min-height:44px;min-width:44px}
+  .sliderRow input[type=range]{height:44px}
+  .leaflet-touch .leaflet-bar a{width:40px!important;height:40px!important;line-height:40px!important}
+  dialog{padding:1.1rem 1rem}
+}
 
 .histRow{display:grid;grid-template-columns:52px 1fr 34px;align-items:center;gap:.45rem;font-size:.72rem;color:#5b6b7a;margin:.22rem 0}
 .histTrack{height:9px;background:#edf1f4;border-radius:99px;overflow:hidden}

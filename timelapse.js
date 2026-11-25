@@ -927,6 +927,27 @@ function updateBusFleet(targetBuses, dt, isShabbat = false) {
 // Interactive Map Camera (Zoom 1x..6x & Pan)
 // ============================================================================
 const cam = { zoom: 1, x: 0, y: 0, minZoom: 1, maxZoom: 6 };
+let camCanPan = false; // true when zoomed, or when cover-fit crops the canvas (portrait phones)
+
+// Cached object-fit ("contain" desktop / "cover" portrait phones, set in CSS).
+// Invalidated on resize so pointermove does not pay for getComputedStyle per event.
+let canvasFitCache = "contain";
+function refreshCanvasFit() {
+  canvasFitCache = getComputedStyle(canvas).objectFit || "contain";
+}
+refreshCanvasFit();
+
+// Canvas-coordinate rectangle actually visible on screen under the current fit.
+function visibleCanvasRect() {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return { x: 0, y: 0, w: W, h: H };
+  const scale = canvasFitCache === "cover"
+    ? Math.max(rect.width / W, rect.height / H)
+    : Math.min(rect.width / W, rect.height / H);
+  const w = Math.min(W, rect.width / scale);
+  const h = Math.min(H, rect.height / scale);
+  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+}
 
 function camMarkerScale() {
   return 1 / Math.pow(cam.zoom, 0.68);
@@ -934,22 +955,29 @@ function camMarkerScale() {
 
 function clampCamera() {
   cam.zoom = clamp(cam.zoom, cam.minZoom, cam.maxZoom);
-  if (cam.zoom <= 1.001) {
-    cam.zoom = 1; cam.x = 0; cam.y = 0;
-  } else {
-    const minX = W - W * cam.zoom;
-    const minY = H - H * cam.zoom;
-    cam.x = clamp(cam.x, minX, 0);
-    cam.y = clamp(cam.y, minY, 0);
-  }
+  const v = visibleCanvasRect();
+  // Keep the visible rect covered: world edge must reach each visible edge.
+  // Under contain at 1x this collapses to x=y=0 (legacy behaviour); under
+  // cover at 1x it leaves a pan range so cropped map areas stay reachable.
+  const clampAxis = (pos, visStart, visLen, worldLen) => {
+    const scaled = worldLen * cam.zoom;
+    if (scaled <= visLen) return visStart + (visLen - scaled) / 2;
+    return clamp(pos, visStart + visLen - scaled, visStart);
+  };
+  cam.x = clampAxis(cam.x, v.x, v.w, W);
+  cam.y = clampAxis(cam.y, v.y, v.h, H);
+  camCanPan = (W * cam.zoom > v.w + 1) || (H * cam.zoom > v.h + 1);
   const resetBtn = $("zoomResetBtn");
   if (resetBtn) {
     const zoomed = cam.zoom > 1.02;
-    resetBtn.hidden = !zoomed;
-    if (zoomed) resetBtn.textContent = `${cam.zoom.toFixed(1)}×`;
-    canvas.classList.toggle("pannable", zoomed);
+    const offHome = canvasFitCache === "cover" && camHomePos &&
+      (Math.abs(cam.x - camHomePos.x) > 4 || Math.abs(cam.y - camHomePos.y) > 4);
+    resetBtn.hidden = !(zoomed || offHome);
+    resetBtn.textContent = zoomed ? `${cam.zoom.toFixed(1)}×` : "1×";
+    canvas.classList.toggle("pannable", camCanPan);
   }
 }
+let camHomePos = null; // cover-fit home offset (set by resetCamera)
 
 function zoomAtCanvasPoint(factor, cx, cy) {
   const oldZ = cam.zoom;
@@ -965,24 +993,43 @@ function zoomAtCanvasPoint(factor, cx, cy) {
 }
 
 function resetCamera() {
-  cam.zoom = 1; cam.x = 0; cam.y = 0;
+  cam.zoom = 1;
+  if (canvasFitCache === "cover" && DATA) {
+    // Centre Jerusalem in the visible (cropped) rect instead of the full frame
+    const v = visibleCanvasRect();
+    cam.x = v.x + v.w / 2 - (mapRect.x + mapRect.w / 2);
+    cam.y = v.y + v.h / 2 - (mapRect.y + mapRect.h / 2);
+  } else {
+    cam.x = 0; cam.y = 0;
+  }
   clampCamera();
-  if (!playing && DATA) renderFrame(progress, 0.016);
+  camHomePos = { x: cam.x, y: cam.y };
+  if (!playing && DATA && viewCount > 0) renderFrame(progress, 0.016);
 }
+
+// Rotation / resize / URL-bar show-hide: refit, then re-home at 1x or re-clamp when zoomed
+let viewportTimer = null;
+function onViewportChange() {
+  clearTimeout(viewportTimer);
+  viewportTimer = setTimeout(() => {
+    refreshCanvasFit();
+    if (!DATA) return;
+    if (cam.zoom <= 1.02) resetCamera();
+    else { clampCamera(); if (!playing) renderFrame(progress, 0.016); }
+  }, 120);
+}
+window.addEventListener("resize", onViewportChange);
+window.addEventListener("orientationchange", onViewportChange);
 
 function clientToCanvasXY(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  // Account for object-fit: contain letterboxing on #canvas
-  const canvasAspect = W / H;
-  const rectAspect = rect.width / rect.height;
-  let drawW, drawH, offX, offY;
-  if (rectAspect > canvasAspect) {
-    drawH = rect.height; drawW = drawH * canvasAspect;
-    offX = rect.left + (rect.width - drawW) * 0.5; offY = rect.top;
-  } else {
-    drawW = rect.width; drawH = drawW / canvasAspect;
-    offX = rect.left; offY = rect.top + (rect.height - drawH) * 0.5;
-  }
+  // Account for object-fit letterboxing (contain) or cropping (cover)
+  const scale = canvasFitCache === "cover"
+    ? Math.max(rect.width / W, rect.height / H)
+    : Math.min(rect.width / W, rect.height / H);
+  const drawW = W * scale, drawH = H * scale;
+  const offX = rect.left + (rect.width - drawW) * 0.5;
+  const offY = rect.top + (rect.height - drawH) * 0.5;
   return [
     ((clientX - offX) / drawW) * W,
     ((clientY - offY) / drawH) * H,
@@ -1330,8 +1377,14 @@ function drawHUD(state, solar) {
 
   ctx.save();
 
+  // Anchor HUD to the *visible* canvas rect: under portrait cover-fit the
+  // frame corners are cropped off-screen, so corner-anchored HUD would vanish.
+  const vis = visibleCanvasRect();
+  const compactHUD = vis.w < 900;
+  const hudBottomInset = compactHUD ? 258 : 48; // clear the mobile bottom-sheet controls
+
   // --- TOP-LEFT: Editorial Title + Oversized Clock + Celestial Dial ---
-  const x0 = 56, y0 = 54;
+  const x0 = vis.x + (compactHUD ? 26 : 56), y0 = vis.y + (compactHUD ? 42 : 54);
 
   // Subtle translucent glass backing behind top-left title/clock so twilight never muddies contrast
   ctx.fillStyle = rgbStr(panelBg, lerp(0.56, 0.70, lightUI));
@@ -1390,8 +1443,9 @@ function drawHUD(state, solar) {
   ctx.fillText(`${hh}:${mm}`, x0 + 88, y0 + 161);
 
   // --- BOTTOM-LEFT: Active Bus Counter + Operator Legend + 7-Day / 24h Heartbeat Waveform ---
-  const bx = 56, by = H - 252;
   const bw = 430, bh = 192;
+  const bx = vis.x + (compactHUD ? 26 : 56);
+  const by = vis.y + vis.h - hudBottomInset - (bh + 30) + 18;
   ctx.fillStyle = rgbStr(panelBg, lerp(0.64, 0.76, lightUI));
   ctx.strokeStyle = rgbStr(panelEdge, 0.16);
   ctx.lineWidth = 1;
@@ -1493,12 +1547,16 @@ function drawHUD(state, solar) {
   ctx.fillStyle = lineMode ? "#38bdf8" : "#f59e0b";
   ctx.beginPath(); ctx.arc(headX, headY, 4.4, 0, Math.PI * 2); ctx.fill();
 
-  // Subtle bottom-right credit (baked into screenshots & recorded video)
-  ctx.font = '400 11px "JetBrains Mono", monospace';
-  ctx.fillStyle = rgbStr(inkMuted, 0.72);
-  ctx.textAlign = "right";
-  ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · slowbus-jlm · Data: Open Bus Stride (Hasadna) & OpenStreetMap", W - 40, H - 24);
-  ctx.textAlign = "left";
+  // Subtle bottom-right credit (baked into screenshots & recorded video).
+  // Skipped on compact viewports: it would collide with the bottom panel,
+  // and the HTML credit corner already carries attribution there.
+  if (!compactHUD) {
+    ctx.font = '400 11px "JetBrains Mono", monospace';
+    ctx.fillStyle = rgbStr(inkMuted, 0.72);
+    ctx.textAlign = "right";
+    ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · slowbus-jlm · Data: Open Bus Stride (Hasadna) & OpenStreetMap", W - 40, H - 24);
+    ctx.textAlign = "left";
+  }
 
   ctx.restore();
 }
@@ -2723,6 +2781,9 @@ function wakeControls() {
 }
 
 document.addEventListener("mousemove", wakeControls);
+// Touch has no hover/mousemove trail: any tap (incl. on the canvas, where
+// auto-hidden controls have pointer-events:none) must bring controls back.
+document.addEventListener("pointerdown", wakeControls);
 document.addEventListener("keydown", (e) => {
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
@@ -2796,7 +2857,7 @@ canvas.addEventListener("pointerdown", (e) => {
   canvas.setPointerCapture?.(e.pointerId);
   if (activePointers.size === 1) {
     dragLast = clientToCanvasXY(e.clientX, e.clientY);
-    if (cam.zoom > 1.02) canvas.classList.add("panning");
+    if (camCanPan) canvas.classList.add("panning");
   } else if (activePointers.size === 2) {
     dragLast = null;
     const pts = Array.from(activePointers.values());
@@ -2815,7 +2876,7 @@ canvas.addEventListener("pointermove", (e) => {
       zoomAtCanvasPoint(dist / pinchLastDist, mx, my);
     }
     pinchLastDist = dist;
-  } else if (dragLast && cam.zoom > 1.02) {
+  } else if (dragLast && camCanPan) {
     const cur = clientToCanvasXY(e.clientX, e.clientY);
     cam.x += cur[0] - dragLast[0];
     cam.y += cur[1] - dragLast[1];
@@ -2988,7 +3049,10 @@ function setLinePickerOpen(open) {
   $("lpPanel").hidden = !open;
   const caret = $("linePickerToggle").querySelector(".lp-caret");
   if (caret) caret.textContent = open ? "▴" : "▾";
-  if (open) $("lpSearch").focus();
+  // Autofocus only with a fine pointer: on touch it pops the keyboard over
+  // the sheet and triggers iOS focus-zoom before the user can see the list.
+  if (open && window.matchMedia("(pointer: fine)").matches) $("lpSearch").focus();
+  if (open) wakeControls();
 }
 
 function initLinePicker() {
@@ -3049,6 +3113,8 @@ async function boot() {
     buildRoadGraph();
     prerenderRoadBases();
 
+    refreshCanvasFit();
+    resetCamera(); // centres Jerusalem on portrait cover-fit; no-op (0,0) on desktop
     setRange("week");
     initLinePicker();
     loadLightRail();   // Official GTFS 7-day Light Rail L1 & L3

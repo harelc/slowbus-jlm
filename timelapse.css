@@ -7,10 +7,12 @@ html, body {
 }
 
 #stage {
-  position: relative; width: 100vw; height: 100vh;
+  position: relative; width: 100vw; height: 100vh; height: 100dvh;
   display: flex; align-items: center; justify-content: center;
   background: #040711;
 }
+button, select, input, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.splash-hint-touch { display: none; }
 
 #canvas {
   width: 100%; height: 100%;
@@ -362,4 +364,106 @@ kbd {
 .lp-agency {
   font-size: 0.72rem; color: #94a3b8; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: right; direction: rtl;
+}
+
+/* ==========================================================================
+   Mobile / touch support
+   - Portrait phones: canvas switches contain -> cover (see timelapse.js
+     clientToCanvasXY / clampCamera, which read the same fit), so the map
+     fills the screen instead of shrinking to a letterboxed strip.
+   - Controls become a compact full-width bottom sheet with >=44px targets
+     (WCAG 2.5.8 / Apple HIG). Desktop-only extras (volume slider, 1080p
+     WebM recording) are hidden on small screens: mute + playback remain.
+   - Inputs use 16px text on touch so iOS Safari does not auto-zoom on focus.
+   ========================================================================== */
+@media (pointer: coarse) {
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .speed-toggle button { min-height: 40px; padding: 0.34rem 0.55rem; }
+  .lp-toggle { min-height: 44px; }
+  .controls select { min-height: 44px; }
+  .zoom-controls button { width: 44px; height: 44px; font-size: 1rem; }
+  #scrubber { height: 28px; }
+  #scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: #f59e0b; border: 2px solid #fff3d6;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  #scrubber::-moz-range-thumb {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #f59e0b; border: 2px solid #fff3d6;
+  }
+  .splash-hint { display: none; }
+  .splash-hint-touch { display: block; }
+}
+
+@media (orientation: portrait) and (max-width: 900px) {
+  #canvas { object-fit: cover; }
+}
+
+@media (max-width: 820px) {
+  .overlay { padding: 12px; }
+  .splash-card {
+    width: 100%; max-width: 600px; padding: 1.5rem 1.2rem 1.3rem;
+    max-height: calc(100dvh - 24px); overflow-y: auto; border-radius: 16px;
+  }
+  .eyebrow { font-size: 0.62rem; letter-spacing: 0.14em; }
+  .subtitle { font-size: 0.92rem; margin-bottom: 1.3rem; }
+  .primary-btn { width: 100%; justify-content: center; min-height: 52px; }
+
+  .credit-corner {
+    top: calc(10px + env(safe-area-inset-top)); right: 10px;
+    font-size: 0.62rem; padding: 0.24rem 0.55rem; max-width: calc(100vw - 20px);
+  }
+  .zoom-controls { top: calc(50px + env(safe-area-inset-top)); right: 10px; }
+  .rec-badge { top: calc(10px + env(safe-area-inset-top)); max-width: calc(100vw - 16px); }
+
+  /* Bottom sheet: children of both .group rows reflow into one flex list */
+  .controls {
+    left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom));
+    transform: none; width: auto;
+    padding: 0.55rem 0.6rem 0.6rem; border-radius: 16px;
+  }
+  .controls.idle, .controls.force-hidden { transform: translateY(14px); }
+  .show-controls-btn {
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    min-height: 44px; padding: 0.4rem 1rem; font-size: 0.78rem; opacity: 0.85;
+  }
+  .scrubber-wrap { margin-bottom: 0.15rem; }
+  .day-markers { font-size: 0.6rem; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .bar .group { display: contents; }
+  #playBtn { order: 1; font-size: 1rem; }
+  #rangeSelect { order: 2; flex: 1 1 120px; min-width: 0; font-size: 16px; }
+  .line-picker { order: 3; }
+  #muteBtn { order: 4; }
+  #fsBtn { order: 5; }
+  #hideBtn { order: 7; }
+  .vol-slider, #recordBtn { display: none; }
+  .speed-toggle {
+    order: 6; flex: 1 1 140px; min-width: 0; flex-wrap: nowrap; overflow-x: auto;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .speed-toggle::-webkit-scrollbar { display: none; }
+  .speed-toggle button { flex: none; }
+
+  /* Line picker becomes a bottom sheet above the controls */
+  .lp-panel {
+    position: fixed; left: 8px; right: 8px; width: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    transform: none; max-height: 72dvh; z-index: 40;
+  }
+  .lp-list { max-height: 36dvh; }
+  .lp-item { min-height: 48px; padding: 8px; font-size: 0.88rem; }
+  .lp-item input { width: 22px; height: 22px; flex: none; }
+  #lpSearch { font-size: 16px; min-height: 48px; }
+  .lp-mini-btn, .lp-close-btn { min-height: 48px; padding: 6px 12px; }
+  .lp-chip { padding: 6px 10px; }
+  .lp-chip button { padding: 4px 6px; font-size: 1rem; }
+}
+
+@media (max-width: 820px) and (max-height: 500px) {
+  /* Landscape phone: keep the sheet to one scrollable row set, not half the map */
+  .controls { max-height: 62dvh; overflow-y: auto; }
+  .splash-card h1 { font-size: 2rem; }
 }
