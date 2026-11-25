@@ -1200,6 +1200,7 @@ function drawStationEvents(solar) {
   if (stationEvents.length === 0) return;
   const { daylight } = solar;
   const isNight = daylight < 0.55;
+  const ms = 1 / Math.pow(cam.zoom, 0.85);
   ctx.save();
   ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
 
@@ -1209,35 +1210,34 @@ function drawStationEvents(solar) {
     const t = ev.t;
 
     if (ev.kind === "depart") {
-      // BORN (leaving first station): big expanding ripple circle + bright 4-point launch sparkle
+      // BORN (leaving first station): expanding ripple circle + bright 4-point launch sparkle
       const ease = 1 - Math.pow(1 - t, 3);
-      const r = 3 + ease * 22;
+      const r = (3 + ease * 20) * ms;
       const a = (1 - t) * (isNight ? 0.88 : 0.80);
       ctx.strokeStyle = rgbStr(col, a);
-      ctx.lineWidth = 2.0 * (1 - t * 0.45);
+      ctx.lineWidth = 2.0 * (1 - t * 0.45) * ms;
       ctx.beginPath();
       ctx.arc(ev.x, ev.y, r, 0, Math.PI * 2);
       ctx.stroke();
 
       if (t < 0.55) {
         const st = 1 - t / 0.55;
-        const arm = 4 + (1 - st) * 7;
+        const arm = (4 + (1 - st) * 7) * ms;
         ctx.strokeStyle = rgbStr(isNight ? [255, 252, 240] : col, st * 0.92);
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 * ms;
         ctx.beginPath();
         ctx.moveTo(ev.x - arm, ev.y); ctx.lineTo(ev.x + arm, ev.y);
         ctx.moveTo(ev.x, ev.y - arm); ctx.lineTo(ev.x, ev.y + arm);
         ctx.stroke();
       }
     } else {
-      // DIES (reaching last station): collapsing diamond + soft dissolving halo + crisp terminal square
+      // DIES (reaching last station): collapsing diamond + crisp terminal square
       const ease = t * t * (3 - 2 * t);
-      const outer = 19 - ease * 15; // shrinks inward 19px -> 4px
+      const outer = (17 - ease * 13) * ms;
       const a = Math.sin(t * Math.PI) * (isNight ? 0.90 : 0.85);
 
-      // Collapsing diamond outline (visually opposite to the expanding birth circle!)
       ctx.strokeStyle = rgbStr(col, a);
-      ctx.lineWidth = 1.8;
+      ctx.lineWidth = 1.8 * ms;
       ctx.beginPath();
       ctx.moveTo(ev.x, ev.y - outer);
       ctx.lineTo(ev.x + outer, ev.y);
@@ -1246,8 +1246,7 @@ function drawStationEvents(solar) {
       ctx.closePath();
       ctx.stroke();
 
-      // Solid terminal square core that settles and fades out
-      const core = 5.5 * (1 - t * 0.65);
+      const core = 5.0 * (1 - t * 0.65) * ms;
       ctx.fillStyle = rgbStr(col, (1 - t) * 0.92);
       ctx.fillRect(ev.x - core, ev.y - core, core * 2, core * 2);
     }
