@@ -511,6 +511,7 @@ function getLabelSprite(num, colorIdx, isNight) {
   g.strokeText(num, 2, 8);
   g.fillStyle = rgbStr(col, 0.98);
   g.fillText(num, 2, 8);
+  c._tw = Math.min(38, Math.ceil(g.measureText(num).width) + 3);
   cache.set(key, c);
   return c;
 }
@@ -2404,21 +2405,78 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
     ctx.fill();
   }
 
-  // 4) Real GTFS route number labels (collision grid shrinks as you zoom in -> reveals every bus!)
-  const cellW = 36 * ms, cellH = 15 * ms;
-  const occupied = new Set();
+  // 4) Real GTFS route number labels (tight per-label AABB collision + 4-way fallback placement)
+  const invZ = 1 / cam.zoom;
+  const vx0 = -cam.x * invZ - 48 * ms;
+  const vy0 = -cam.y * invZ - 24 * ms;
+  const vx1 = (W - cam.x) * invZ + 48 * ms;
+  const vy1 = (H - cam.y) * invZ + 24 * ms;
+  const binW = 28 * ms, binH = 14 * ms;
+  const labelBins = new Map();
+  const placed = []; // flat [x1, y1, x2, y2, ...]
+  const lh = 10.5 * ms;
+  const padX = 1.0 * ms, padY = 0.5 * ms;
+
+  function canPlaceLabel(x1, y1, x2, y2) {
+    const bx0 = Math.floor(x1 / binW), bx1 = Math.floor(x2 / binW);
+    const by0 = Math.floor(y1 / binH), by1 = Math.floor(y2 / binH);
+    for (let bx = bx0; bx <= bx1; bx++) {
+      for (let by = by0; by <= by1; by++) {
+        const list = labelBins.get((bx << 12) ^ by);
+        if (!list) continue;
+        for (let k = 0; k < list.length; k++) {
+          const p = list[k];
+          if (x1 < placed[p + 2] && x2 > placed[p] && y1 < placed[p + 3] && y2 > placed[p + 1]) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  function recordLabel(x1, y1, x2, y2) {
+    const idx = placed.length;
+    placed.push(x1, y1, x2, y2);
+    const bx0 = Math.floor(x1 / binW), bx1 = Math.floor(x2 / binW);
+    const by0 = Math.floor(y1 / binH), by1 = Math.floor(y2 / binH);
+    for (let bx = bx0; bx <= bx1; bx++) {
+      for (let by = by0; by <= by1; by++) {
+        const key = (bx << 12) ^ by;
+        let list = labelBins.get(key);
+        if (!list) { list = []; labelBins.set(key, list); }
+        list.push(idx);
+      }
+    }
+  }
+
   for (let g = 0; g < 6; g++) {
     const h = heads[g];
     for (let i = 0; i < h.length; i += 5) {
       const ln = h[i + 4];
       if (!ln || ln === "NaN" || ln === "nan" || ln === "None") continue;
       const hx = h[i], hy = h[i + 1];
-      const cx = (hx / cellW) | 0, cy = (hy / cellH) | 0;
-      const key = (cx << 12) ^ cy;
-      if (occupied.has(key)) continue;
-      occupied.add(key);
+      if (hx < vx0 || hx > vx1 || hy < vy0 || hy > vy1) continue;
       const spr = getLabelSprite(ln, g, isNight);
-      ctx.drawImage(spr, hx + 5 * ms, hy - 8 * ms, spr.width * ms, spr.height * ms);
+      const lw = (spr._tw || 20) * ms;
+      // Try right, left, above, below around the bus arrowhead
+      let lx = hx + 5 * ms, ly = hy - 8 * ms;
+      let ok = canPlaceLabel(lx - padX, ly + 2.5 * ms - padY, lx + lw + padX, ly + 2.5 * ms + lh + padY);
+      if (!ok) {
+        lx = hx - 5 * ms - lw; ly = hy - 8 * ms;
+        ok = canPlaceLabel(lx - padX, ly + 2.5 * ms - padY, lx + lw + padX, ly + 2.5 * ms + lh + padY);
+      }
+      if (!ok) {
+        lx = hx - lw * 0.5; ly = hy - 15 * ms;
+        ok = canPlaceLabel(lx - padX, ly + 2.5 * ms - padY, lx + lw + padX, ly + 2.5 * ms + lh + padY);
+      }
+      if (!ok) {
+        lx = hx - lw * 0.5; ly = hy + 1.5 * ms;
+        ok = canPlaceLabel(lx - padX, ly + 2.5 * ms - padY, lx + lw + padX, ly + 2.5 * ms + lh + padY);
+      }
+      if (!ok) continue;
+      recordLabel(lx - padX, ly + 2.5 * ms - padY, lx + lw + padX, ly + 2.5 * ms + lh + padY);
+      ctx.drawImage(spr, lx, ly, spr.width * ms, spr.height * ms);
     }
   }
 
