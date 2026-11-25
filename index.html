@@ -3,104 +3,113 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SlowBus JLM — Jerusalem bus speeds on OSM roads</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css">
+<title>SlowBus JLM — 7-Day Bus Pulse Timelapse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="timelapse.css?v=46">
 </head>
 <body>
-<header>
-  <div>
-    <h1>🚌 SlowBus · Jerusalem</h1>
-    <p>Average bus speeds from <a href="https://open-bus-stride-api.hasadna.org.il/docs" target="_blank" rel="noopener">Open Bus Stride (SIRI)</a>, snapped to OpenStreetMap roads</p>
-  </div>
-  <div id="status" role="status">Idle</div>
-</header>
+  <div id="stage">
+    <canvas id="canvas" width="1920" height="1080" aria-label="Jerusalem 7-day bus traffic timelapse"></canvas>
 
-<main>
-  <aside id="panel">
-    <label>Date <input type="date" id="date"></label>
-    <div class="row">
-      <label>From <input type="time" id="from" value="07:00"></label>
-      <label>To <input type="time" id="to" value="07:30"></label>
-    </div>
-    <div>
-      <label>Time of day <span id="windowLabel" class="hint"></span>
-        <span class="sliderRow"><button type="button" id="timePrev" class="mini" title="Previous hour">◀</button><input type="range" id="timeSlider" min="0" max="23" step="1" value="7"><button type="button" id="timeNext" class="mini" title="Next hour">▶</button></span>
-      </label>
-      <label>Window length
-        <select id="windowMin"><option value="30" selected>30 min</option><option value="60">1 hour</option><option value="120">2 hours</option></select>
-      </label>
-      <div class="chips">
-        <button type="button" class="chip" data-h="7">🌅 Morning rush 07:00</button>
-        <button type="button" class="chip" data-h="12">☀️ Midday 12:00</button>
-        <button type="button" class="chip" data-h="17">🌇 Evening rush 17:00</button>
-        <button type="button" class="chip" data-h="22">🌙 Night 22:00</button>
+    <!-- Initial cinema splash / play gate (required for Web Audio unlock) -->
+    <div id="splash" class="overlay">
+      <div class="splash-card">
+        <div class="eyebrow">OPEN BUS STRIDE · JERUSALEM · NOV 15–21, 2026</div>
+        <h1>The Pulse of Jerusalem</h1>
+        <p class="subtitle">Seven days of real-time bus telemetry illuminating the streets from dawn surge to midnight hush — and the silence of Shabbat.</p>
+        <div class="splash-actions">
+          <button id="startBtn" class="primary-btn" disabled>
+            <span class="btn-dot"></span>
+            <span id="startLabel">Loading 7-day dataset…</span>
+          </button>
+        </div>
+        <p class="splash-hint">Best experienced with sound on · Press <kbd>Space</kbd> to play/pause · <kbd>H</kbd> to hide controls</p>
+        <p class="splash-credit">
+          © Harel Cain (הראל קין) ·
+          <a href="https://github.com/harelc/slowbus-jlm" target="_blank" rel="noopener">GitHub</a> ·
+          <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a>
+        </p>
       </div>
-      <p class="hint">Drag the slider (or ◀ ▶) — releasing it reloads. The map also auto-reloads after you pan/zoom, and on page open. Progress shows inside the blue button; Cancel stops it.</p>
     </div>
-    <p class="hint">Start with 15–30 min. Jerusalem has ≈55k SIRI points/hour; longer windows are slower and capped.</p>
 
-    <label>Mode
-      <select id="mode">
-        <option value="roads" selected>Road segments — lines (OSM streets)</option>
-        <option value="grid">Grid cells — squares (fast fallback)</option>
-        <option value="points">Raw points (sample)</option>
-      </select>
-    </label>
-    <label>Minimum samples per segment/cell
-      <input type="number" id="minSamples" value="2" min="1" max="100">
-    </label>
-    <label class="check"><input type="checkbox" id="includeStopped" checked> Include stopped buses (velocity = 0, dwell/traffic)</label>
-    <label class="check"><input type="checkbox" id="showNoData" checked> Show roads with no data in grey (green would falsely mean “fast”)</label>
-    <label>Max points to fetch
-      <select id="maxPoints">
-        <option value="10000">10,000</option>
-        <option value="20000" selected>20,000</option>
-        <option value="50000">50,000</option>
-      </select>
-    </label>
-    <button id="load"><span id="loadBar"></span><span id="loadLabel">Load speeds</span></button>
-    <button id="cancel" class="secondary" disabled>Cancel</button>
+    <!-- Recording indicator (clickable to stop & save) -->
+    <button id="recBadge" class="rec-badge" type="button" hidden title="Click to stop recording and download video">
+      <span class="rec-dot"></span>
+      <span id="recText">REC 00:00</span>
+      <span class="rec-stop-pill">■ Stop</span>
+    </button>
 
-    <section id="stats" aria-live="polite"></section>
-    <section id="histSection" hidden>
-      <h2>Segment speeds</h2>
-      <div id="hist"></div>
-      <p class="hint">Share of coloured road pieces by average speed.</p>
-    </section>
+    <!-- Floating cinema HUD controls (auto-hides on mouse idle) -->
+    <div id="controls" class="controls">
+      <div class="scrubber-wrap">
+        <div id="dayMarkers" class="day-markers"></div>
+        <input id="scrubber" type="range" min="0" max="1000" value="0" step="1" aria-label="Timeline scrubber">
+      </div>
+      <div class="bar">
+        <div class="group">
+          <button id="playBtn" class="icon-btn" title="Play / Pause (Space)" aria-label="Play or pause">▶</button>
+          <select id="rangeSelect" title="Time range">
+            <option value="week" selected>Full Week (Sun–Sat)</option>
+            <option value="0">24h · Sunday</option>
+            <option value="1">24h · Monday</option>
+            <option value="2">24h · Tuesday</option>
+            <option value="3">24h · Wednesday</option>
+            <option value="4">24h · Thursday</option>
+            <option value="5">24h · Friday (Shabbat Eve)</option>
+            <option value="6">24h · Saturday (Shabbat)</option>
+          </select>
+          <div id="speedToggle" class="speed-toggle" role="group" aria-label="Playback speed">
+            <button type="button" data-sec="480" title="Ultra-slow: 480s/day (8m/day)">0.25×</button>
+            <button type="button" data-sec="240" title="Drift: 240s/day (4m/day)">0.5×</button>
+            <button type="button" data-sec="120" title="Meditative: 120s/day (14m week)">1×</button>
+            <button type="button" data-sec="75"  title="Slow: 75s/day (8m45s week)">1.6×</button>
+            <button type="button" data-sec="45"  title="Cinema: 45s/day (5m15s week)" class="active">2.7×</button>
+            <button type="button" data-sec="25"  title="Brisk: 25s/day (2m55s week)">5×</button>
+            <button type="button" data-sec="15"  title="Rapid: 15s/day (1m45s week)">8×</button>
+          </div>
+          <!-- Bus & Light Rail Line Multiselector (opens upward above control bar) -->
+          <div id="linePicker" class="line-picker">
+            <button id="linePickerToggle" class="lp-toggle" type="button" title="Select bus or light rail lines">
+              <span class="lp-dot"></span>
+              <span id="lpSummary">All Lines</span>
+              <span class="lp-caret">▴</span>
+            </button>
+            <div id="lpPanel" class="lp-panel" hidden>
+              <div class="lp-head">
+                <input id="lpSearch" type="search" placeholder="Search lines (L1, L3, 18, 517)…" autocomplete="off">
+                <button id="lpAllCityBtn" class="lp-mini-btn" type="button" title="Show all Jerusalem bus & light rail lines">All Lines</button>
+                <button id="lpCloseBtn" class="lp-close-btn" type="button" title="Close (Esc)" aria-label="Close line selector">✕</button>
+              </div>
+              <div id="lpChips" class="lp-chips"></div>
+              <div id="lpStatus" class="lp-status"></div>
+              <div id="lpList" class="lp-list"></div>
+            </div>
+          </div>
+        </div>
 
-    <section>
-      <h2>Legend — avg speed</h2>
-      <ul class="legend">
-        <li><span style="background:#d7301f"></span>&lt; 8 km/h</li>
-        <li><span style="background:#fc8d59"></span>8–15 km/h</li>
-        <li><span style="background:#fee08b"></span>15–25 km/h</li>
-        <li><span style="background:#91cf60"></span>25–35 km/h</li>
-        <li><span style="background:#1a9850"></span>&gt; 35 km/h</li>
-        <li><span style="background:#b8bec4"></span>No / too few samples (full road network)</li>
-      </ul>
-      <p class="hint">Line width ∝ sample count. Click a segment/cell for mean, median, sample count and road name.</p>
-    </section>
+        <div class="group">
+          <button id="muteBtn" class="icon-btn" title="Toggle ticking soundtrack (M)" aria-label="Toggle sound">🔊</button>
+          <input id="volSlider" type="range" min="0" max="1" step="0.05" value="0.75" class="vol-slider" title="Volume">
+          <button id="recordBtn" class="rec-btn" title="Record one complete pass with soundtrack to WebM video">● Record Video</button>
+          <button id="fsBtn" class="icon-btn" title="Fullscreen (F)" aria-label="Fullscreen">⛶</button>
+          <button id="hideBtn" class="icon-btn" title="Hide controls (H)" aria-label="Hide controls">⌄</button>
+        </div>
+      </div>
+    </div>
 
-    <button id="howBtn" class="secondary">ℹ️ How it works</button>
-  </aside>
-  <div id="map" aria-label="Map of Jerusalem with bus speeds"></div>
-</main>
+    <!-- Subtle restore pill shown only when controls are manually hidden -->
+    <button id="showControlsBtn" class="show-controls-btn" type="button" hidden title="Show controls (H)">Show controls · H</button>
 
-<dialog id="howDialog">
-  <h2>How it works</h2>
-  <ol>
-        <li><code>GET /siri_vehicle_locations/list</code> with Jerusalem bbox + time window (CORS: <code>*</code>, no key).</li>
-        <li>Drop GPS errors (<code>velocity &gt; 100 km/h</code>).</li>
-        <li>Road mode: fetch OSM streets from Versatiles vector tiles at zoom 14 (Overpass-independent; zoom 13 drops minor streets), project each point to the nearest segment within 35&nbsp;m, split ways into ≤60&nbsp;m pieces, average per piece.</li>
-        <li>Grid mode: average per ≈110&nbsp;m cell — same idea as the API's own <code>/siri_velocity_aggregation</code> endpoint, but time-bounded client-side.</li>
-      </ol>
-  <p>This is a nearest-segment snap, not full trajectory map-matching (no route/HMM inference). Averages include dwell time at stops unless you untick “include stopped”.</p>
-  <p>Data: <a href="https://open-bus-stride-api.hasadna.org.il/docs" target="_blank" rel="noopener">Open Bus Stride API</a> (Hasadna, SIRI via Israel MOT) · Roads/basemap © OpenStreetMap contributors, streets via Versatiles.</p>
-  <button id="howClose" autofocus>Close</button>
-</dialog>
+    <!-- Subtle top-right credit & source link -->
+    <div id="creditCorner" class="credit-corner">
+      <span>© Harel Cain · הראל קין</span>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/harelc/slowbus-jlm" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script>
+  <script src="timelapse.js?v=46"></script>
 </body>
 </html>
