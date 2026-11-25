@@ -1928,7 +1928,8 @@ function drawSelectedLinesMode(weekMin, solar) {
     // 2) Active real buses on this line at weekMin (silky continuous sliding-tail gradient wakes!)
     const activePositions = [];
     ctx.globalCompositeOperation = "source-over";
-    ctx.lineWidth = 2.8;
+    const ms = camMarkerScale();
+    ctx.lineWidth = 2.2 * ms;
 
     for (let ti = 0; ti < ld.trips.length; ti++) {
       const tr = ld.trips[ti];
@@ -1958,7 +1959,7 @@ function drawSelectedLinesMode(weekMin, solar) {
       const segDist = (i0 + 3 < tr.pts.length)
         ? Math.hypot(tr.pts[i0 + 4] - tr.pts[i0 + 1], tr.pts[i0 + 5] - tr.pts[i0 + 2])
         : 0;
-      const maxTrailPx = segDist > 35 ? clamp(68 - (segDist - 35) * 0.75, 18, 68) : 68;
+      const maxTrailPx = (segDist > 35 ? clamp(68 - (segDist - 35) * 0.75, 18, 68) : 68) * ms;
 
       let tCoords = [];
       const steps = 10;
@@ -1994,13 +1995,12 @@ function drawSelectedLinesMode(weekMin, solar) {
         } else {
           ctx.strokeStyle = rgbStr(col, isNight ? 0.45 : 0.38);
         }
-        ctx.lineWidth = 2.2;
+        ctx.lineWidth = 2.2 * ms;
         ctx.stroke();
       }
     }
 
     // Halo + crisp directional arrowhead for each active bus (scales gently with zoom!)
-    const ms = camMarkerScale();
     const rHalo = (isNight ? 7.2 : 6.4) * ms;
     ctx.beginPath();
     for (const [hx, hy] of activePositions) {
@@ -2119,7 +2119,7 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
     for (let k = ts + 1; k <= s; k++) tCoords.push(stops[k][1], stops[k][2]);
     tCoords.push(hx, hy);
 
-    activeTrams.push([hx, hy, ang, pat.line, trimPolylineFromHead(tCoords, 70)]);
+    activeTrams.push([hx, hy, ang, pat.line, trimPolylineFromHead(tCoords, 70 * camMarkerScale())]);
   }
 
   if (!activeTrams.length) return 0;
@@ -2288,6 +2288,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
   // Batch all active real buses into 6 operator color groups for 60 FPS!
   const trailPaths = [[], [], [], [], [], []]; // array of flat [x0,y0, x1,y1, ...] smooth polylines per operator
   const heads = [[], [], [], [], [], []];      // [hx, hy, line] per operator
+  const ms = camMarkerScale();
   let activeCount = 0;
 
   for (let c = 0; c < candidates.length; c++) {
@@ -2346,10 +2347,11 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
       }
     }
     // Adaptive trail length: shrinks to a short 16px slipstream on fast highway spans (no off-road chords!)
+    // Also scaled by camMarkerScale() so tails stay proportional to arrowheads when zoomed in.
     const segDist = (i0 + 3 < tr.pts.length)
       ? Math.hypot(tr.pts[i0 + 4] - tr.pts[i0 + 1], tr.pts[i0 + 5] - tr.pts[i0 + 2])
       : 0;
-    const maxTrailPx = segDist > 30 ? clamp(44 - (segDist - 30) * 0.55, 14, 44) : 44;
+    const maxTrailPx = (segDist > 30 ? clamp(44 - (segDist - 30) * 0.55, 14, 44) : 44) * ms;
     if (tCoords.length >= 4) trailPaths[tr.colorIdx].push(trimPolylineFromHead(tCoords, maxTrailPx));
   }
 
@@ -2358,7 +2360,6 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
   ctx.lineJoin = "round";
 
   // 1) Batched silky-smooth quadratic GPS trails (6 strokes total!)
-  const ms = camMarkerScale();
   ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
   ctx.lineWidth = (isNight ? 2.1 : 1.9) * ms;
   for (let g = 0; g < 6; g++) {
