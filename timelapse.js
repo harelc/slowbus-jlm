@@ -2202,7 +2202,7 @@ function loadRealDay(dayIdx) {
   if (realDayPromises[dayIdx]) return realDayPromises[dayIdx];
   realDayPromises[dayIdx] = (async () => {
     try {
-      const r = await fetch(`data/real-day${dayIdx}.bin?v=34`);
+      const r = await fetch(`data/real-day${dayIdx}.bin?v=51`);
       if (!r.ok) return null;
       const buf = await r.arrayBuffer();
       const dv = new DataView(buf);
@@ -2323,7 +2323,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
       tCoords.push(tailPos[0], tailPos[1]);
       prevT = trailStartM;
     }
-    for (let k = Math.max(0, i0 - 18); k <= i0; k += 3) {
+    for (let k = Math.max(0, i0 - 90); k <= i0; k += 3) {
       const ptT = tr.pts[k];
       if (ptT <= trailStartM) continue;
       const px = tr.pts[k + 1], py = tr.pts[k + 2];
