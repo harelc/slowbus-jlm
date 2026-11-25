@@ -899,6 +899,72 @@ function updateBusFleet(targetBuses, dt, isShabbat = false) {
 }
 
 // ============================================================================
+// Interactive Map Camera (Zoom 1x..6x & Pan)
+// ============================================================================
+const cam = { zoom: 1, x: 0, y: 0, minZoom: 1, maxZoom: 6 };
+
+function camMarkerScale() {
+  return 1 / Math.pow(cam.zoom, 0.68);
+}
+
+function clampCamera() {
+  cam.zoom = clamp(cam.zoom, cam.minZoom, cam.maxZoom);
+  if (cam.zoom <= 1.001) {
+    cam.zoom = 1; cam.x = 0; cam.y = 0;
+  } else {
+    const minX = W - W * cam.zoom;
+    const minY = H - H * cam.zoom;
+    cam.x = clamp(cam.x, minX, 0);
+    cam.y = clamp(cam.y, minY, 0);
+  }
+  const resetBtn = $("zoomResetBtn");
+  if (resetBtn) {
+    const zoomed = cam.zoom > 1.02;
+    resetBtn.hidden = !zoomed;
+    if (zoomed) resetBtn.textContent = `${cam.zoom.toFixed(1)}×`;
+    canvas.classList.toggle("pannable", zoomed);
+  }
+}
+
+function zoomAtCanvasPoint(factor, cx, cy) {
+  const oldZ = cam.zoom;
+  const newZ = clamp(oldZ * factor, cam.minZoom, cam.maxZoom);
+  if (Math.abs(newZ - oldZ) < 1e-4) return;
+  const wx = (cx - cam.x) / oldZ;
+  const wy = (cy - cam.y) / oldZ;
+  cam.zoom = newZ;
+  cam.x = cx - wx * newZ;
+  cam.y = cy - wy * newZ;
+  clampCamera();
+  if (!playing && DATA) renderFrame(progress, 0.016);
+}
+
+function resetCamera() {
+  cam.zoom = 1; cam.x = 0; cam.y = 0;
+  clampCamera();
+  if (!playing && DATA) renderFrame(progress, 0.016);
+}
+
+function clientToCanvasXY(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  // Account for object-fit: contain letterboxing on #canvas
+  const canvasAspect = W / H;
+  const rectAspect = rect.width / rect.height;
+  let drawW, drawH, offX, offY;
+  if (rectAspect > canvasAspect) {
+    drawH = rect.height; drawW = drawH * canvasAspect;
+    offX = rect.left + (rect.width - drawW) * 0.5; offY = rect.top;
+  } else {
+    drawW = rect.width; drawH = drawW / canvasAspect;
+    offX = rect.left; offY = rect.top + (rect.height - drawH) * 0.5;
+  }
+  return [
+    ((clientX - offX) / drawW) * W,
+    ((clientY - offY) / drawH) * H,
+  ];
+}
+
+// ============================================================================
 // Rendering Pipeline
 // ============================================================================
 function drawAtmosphere(solar) {
@@ -935,17 +1001,55 @@ function drawAtmosphere(solar) {
     sunCtx.fillRect(0, 0, sw, sh);
     ctx.drawImage(sunCanvas, 0, 0, W, H);
   }
+}
 
-  // Cross-fade pre-rendered OSM street network
-  if (daylight < 0.99) {
-    ctx.globalAlpha = 1 - daylight;
-    ctx.drawImage(bgNight, 0, 0);
+const ROAD_NIGHT_RGB = [[148,186,240,0.68],[128,164,218,0.56],[110,144,196,0.46],[96,128,178,0.38],[82,112,158,0.30]];
+const ROAD_DAY_RGB   = [[92,84,74,0.56],[108,100,88,0.46],[122,114,100,0.38],[136,128,114,0.30],[148,140,126,0.24]];
+const ROAD_WIDTHS    = [2.4, 1.9, 1.45, 1.05, 0.75];
+
+function drawRoadBase(solar) {
+  const { daylight } = solar;
+  // At 1x..1.35x use pre-rendered offscreen canvases (ultra-fast); when zoomed in, stroke crisp culled vectors!
+  if (cam.zoom <= 1.35) {
+    if (daylight < 0.99) {
+      ctx.globalAlpha = 1 - daylight;
+      ctx.drawImage(bgNight, 0, 0);
+    }
+    if (daylight > 0.01) {
+      ctx.globalAlpha = daylight;
+      ctx.drawImage(bgDay, 0, 0);
+    }
+    ctx.globalAlpha = 1;
+    return;
   }
-  if (daylight > 0.01) {
-    ctx.globalAlpha = daylight;
-    ctx.drawImage(bgDay, 0, 0);
+
+  // Viewport-culled vector street network for razor-sharp zoomed detail
+  const vx0 = -cam.x / cam.zoom - 40;
+  const vy0 = -cam.y / cam.zoom - 40;
+  const vx1 = (W - cam.x) / cam.zoom + 40;
+  const vy1 = (H - cam.y) / cam.zoom + 40;
+  const wScale = 1 / Math.pow(cam.zoom, 0.70);
+
+  ctx.save();
+  ctx.lineCap = "round";
+  for (let tier = 4; tier >= 0; tier--) {
+    const n = ROAD_NIGHT_RGB[tier], d = ROAD_DAY_RGB[tier];
+    const col = mixRGB(n, d, daylight);
+    const alpha = lerp(n[3], d[3], daylight);
+    ctx.beginPath();
+    for (let i = 0; i < roads.length; i++) {
+      const r = roads[i];
+      if (r.tier !== tier) continue;
+      if ((r.x1 < vx0 && r.x2 < vx0) || (r.x1 > vx1 && r.x2 > vx1) ||
+          (r.y1 < vy0 && r.y2 < vy0) || (r.y1 > vy1 && r.y2 > vy1)) continue;
+      ctx.moveTo(r.x1, r.y1);
+      ctx.lineTo(r.x2, r.y2);
+    }
+    ctx.strokeStyle = rgbStr(col, alpha);
+    ctx.lineWidth = ROAD_WIDTHS[tier] * wScale;
+    ctx.stroke();
   }
-  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 function drawWarmStreetGlow(solar) {
@@ -1157,19 +1261,20 @@ function drawLandmarks(solar) {
   const lightUI = smoothstep(0.45, 0.72, daylight);
   const txtCol = mixRGB([195, 212, 238], [52, 46, 40], lightUI);
   const dotCol = mixRGB([251, 191, 36], [140, 74, 24], lightUI);
+  const s = 1 / Math.pow(cam.zoom, 0.72);
 
   ctx.save();
-  ctx.font = '500 13px "JetBrains Mono", monospace';
+  ctx.font = `500 ${(13 * s).toFixed(2)}px "JetBrains Mono", monospace`;
   ctx.textBaseline = "middle";
   for (const lm of DATA.landmarks) {
     const x = toScreenX(lm.x), y = toScreenY(lm.y);
     ctx.fillStyle = rgbStr(dotCol, 0.78);
     ctx.beginPath();
-    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+    ctx.arc(x, y, 2.5 * s, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = rgbStr(txtCol, 0.75);
-    ctx.fillText(lm.name.toUpperCase(), x + 8, y);
+    ctx.fillText(lm.name.toUpperCase(), x + 8 * s, y);
   }
   ctx.restore();
 }
@@ -1895,8 +2000,9 @@ function drawSelectedLinesMode(weekMin, solar) {
       }
     }
 
-    // Halo + crisp directional arrowhead for each active bus
-    const rHalo = isNight ? 7.2 : 6.4;
+    // Halo + crisp directional arrowhead for each active bus (scales gently with zoom!)
+    const ms = camMarkerScale();
+    const rHalo = (isNight ? 7.2 : 6.4) * ms;
     ctx.beginPath();
     for (const [hx, hy] of activePositions) {
       ctx.moveTo(hx + rHalo, hy);
@@ -1907,7 +2013,7 @@ function drawSelectedLinesMode(weekMin, solar) {
 
     ctx.beginPath();
     for (const [hx, hy, ux, uy] of activePositions) {
-      traceArrowHead(hx, hy, ux, uy, 7.2, 4.4, 4.0, 2.0);
+      traceArrowHead(hx, hy, ux, uy, 7.2 * ms, 4.4 * ms, 4.0 * ms, 2.0 * ms);
     }
     ctx.fillStyle = rgbStr(col, 0.98);
     ctx.fill();
@@ -1915,8 +2021,9 @@ function drawSelectedLinesMode(weekMin, solar) {
     // Crisp operator-colored bus number right next to each bus!
     ctx.globalCompositeOperation = "source-over";
     const spr = getLabelSprite(ld.line, ld.colorIdx, isNight);
+    const sw = spr.width * ms, sh = spr.height * ms;
     for (const [hx, hy] of activePositions) {
-      ctx.drawImage(spr, (hx + 6) | 0, (hy - 8) | 0);
+      ctx.drawImage(spr, hx + 6 * ms, hy - 8 * ms, sw, sh);
     }
   }
 
@@ -2022,6 +2129,7 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
+  const ms = camMarkerScale();
   // 1) Crisp subtle rail track guide while trams are operating
   ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
   ctx.beginPath();
@@ -2029,7 +2137,7 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
     traceSmoothPolyline(lightRailData.patterns[p].flatCoords, 10000);
   }
   ctx.strokeStyle = rgbStr(col, isNight ? 0.14 : 0.16);
-  ctx.lineWidth = 2.0;
+  ctx.lineWidth = 2.0 * ms;
   ctx.stroke();
 
   // 2) Smooth rail wakes
@@ -2038,15 +2146,16 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
     traceSmoothPolyline(activeTrams[i][4], 10000);
   }
   ctx.strokeStyle = rgbStr(col, isNight ? 0.65 : 0.58);
-  ctx.lineWidth = 2.8;
+  ctx.lineWidth = 2.8 * ms;
   ctx.stroke();
 
   // 3) Glowing tram halos + sleek elongated rail-car pills
+  const rTramHalo = 7.5 * ms;
   ctx.beginPath();
   for (let i = 0; i < activeTrams.length; i++) {
     const [hx, hy] = activeTrams[i];
-    ctx.moveTo(hx + 7.5, hy);
-    ctx.arc(hx, hy, 7.5, 0, Math.PI * 2);
+    ctx.moveTo(hx + rTramHalo, hy);
+    ctx.arc(hx, hy, rTramHalo, 0, Math.PI * 2);
   }
   ctx.fillStyle = rgbStr(col, isNight ? 0.36 : 0.28);
   ctx.fill();
@@ -2058,6 +2167,7 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
     ctx.save();
     ctx.translate(hx, hy);
     ctx.rotate(ang);
+    ctx.scale(ms, ms);
     ctx.beginPath();
     // Sleek pointed-nose rail car showing travel direction
     ctx.moveTo(8.0, 0);
@@ -2073,13 +2183,14 @@ function drawLightRail(dayIdx, minuteOfDay, solar) {
 
   // 4) Crisp L1 / L3 badges
   const occupied = new Set();
+  const cW = 34 * ms, cH = 16 * ms;
   for (let i = 0; i < activeTrams.length; i++) {
     const [hx, hy, , ln] = activeTrams[i];
-    const key = (((hx / 34) | 0) << 12) ^ ((hy / 16) | 0);
+    const key = (((hx / cW) | 0) << 12) ^ ((hy / cH) | 0);
     if (occupied.has(key)) continue;
     occupied.add(key);
     const spr = getLabelSprite(ln, 5, isNight);
-    ctx.drawImage(spr, (hx + 7) | 0, (hy - 8) | 0);
+    ctx.drawImage(spr, hx + 7 * ms, hy - 8 * ms, spr.width * ms, spr.height * ms);
   }
 
   ctx.restore();
@@ -2247,9 +2358,10 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  // 1) Batched silky-smooth quadratic GPS trails (5 strokes total!)
+  // 1) Batched silky-smooth quadratic GPS trails (6 strokes total!)
+  const ms = camMarkerScale();
   ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
-  ctx.lineWidth = isNight ? 2.1 : 1.9;
+  ctx.lineWidth = (isNight ? 2.1 : 1.9) * ms;
   for (let g = 0; g < 6; g++) {
     const paths = trailPaths[g];
     if (!paths.length) continue;
@@ -2262,7 +2374,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
   }
 
   // 2) Batched halos (6 fills total!)
-  const rHalo = isNight ? 5.6 : 4.8;
+  const rHalo = (isNight ? 5.6 : 4.8) * ms;
   for (let g = 0; g < 6; g++) {
     const h = heads[g];
     if (!h.length) continue;
@@ -2277,10 +2389,10 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
 
   // 3) Batched directional arrowheads (6 fills total — zero save/rotate overhead!)
   ctx.globalCompositeOperation = "source-over";
-  const tip = isNight ? 5.8 : 5.5;
-  const back = isNight ? 3.6 : 3.4;
-  const wing = isNight ? 3.2 : 3.0;
-  const notch = 1.6;
+  const tip = (isNight ? 5.8 : 5.5) * ms;
+  const back = (isNight ? 3.6 : 3.4) * ms;
+  const wing = (isNight ? 3.2 : 3.0) * ms;
+  const notch = 1.6 * ms;
   for (let g = 0; g < 6; g++) {
     const h = heads[g];
     if (!h.length) continue;
@@ -2292,8 +2404,8 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
     ctx.fill();
   }
 
-  // 4) Real GTFS route number labels (screen-space collision grid so text stays legible, 100% real line numbers!)
-  const cellW = 36, cellH = 15;
+  // 4) Real GTFS route number labels (collision grid shrinks as you zoom in -> reveals every bus!)
+  const cellW = 36 * ms, cellH = 15 * ms;
   const occupied = new Set();
   for (let g = 0; g < 6; g++) {
     const h = heads[g];
@@ -2306,7 +2418,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
       if (occupied.has(key)) continue;
       occupied.add(key);
       const spr = getLabelSprite(ln, g, isNight);
-      ctx.drawImage(spr, (hx + 5) | 0, (hy - 8) | 0);
+      ctx.drawImage(spr, hx + 5 * ms, hy - 8 * ms, spr.width * ms, spr.height * ms);
     }
   }
 
@@ -2332,9 +2444,14 @@ function renderFrame(p, dt) {
     updateStationEvents(dt);
 
     drawAtmosphere(solar);
+    ctx.save();
+    ctx.translate(cam.x, cam.y);
+    ctx.scale(cam.zoom, cam.zoom);
+    drawRoadBase(solar);
     drawStationEvents(solar);
     const res = drawSelectedLinesMode(weekMin, solar);
     drawLandmarks(solar);
+    ctx.restore();
     drawVignette(solar);
 
     state = {
@@ -2355,6 +2472,10 @@ function renderFrame(p, dt) {
     updateStationEvents(dt);
 
     drawAtmosphere(solar);
+    ctx.save();
+    ctx.translate(cam.x, cam.y);
+    ctx.scale(cam.zoom, cam.zoom);
+    drawRoadBase(solar);
     drawWarmStreetGlow(solar);
     drawStationEvents(solar);
     const realRes = drawRealAllBuses(state.dayIdx, state.minuteOfDay, solar);
@@ -2364,6 +2485,7 @@ function renderFrame(p, dt) {
       intensity = clamp(state.buses / 850, 0, 1);
     }
     drawLandmarks(solar);
+    ctx.restore();
     drawVignette(solar);
     drawHUD(state, solar);
   }
@@ -2495,6 +2617,7 @@ function setControlsHidden(hidden) {
   controlsHidden = !!hidden;
   $("controls").classList.toggle("force-hidden", controlsHidden);
   $("creditCorner").classList.toggle("hidden-ui", controlsHidden);
+  $("zoomControls").classList.toggle("hidden-ui", controlsHidden);
   $("showControlsBtn").hidden = !controlsHidden;
   if (controlsHidden) {
     $("lpPanel").hidden = true;
@@ -2522,6 +2645,9 @@ document.addEventListener("keydown", (e) => {
   else if (e.key.toLowerCase() === "m") { toggleMute(); }
   else if (e.key.toLowerCase() === "f") { toggleFullscreen(); }
   else if (e.key.toLowerCase() === "h") { setControlsHidden(!controlsHidden); }
+  else if (e.key === "+" || e.key === "=") { zoomAtCanvasPoint(1.35, W * 0.5, H * 0.5); }
+  else if (e.key === "-") { zoomAtCanvasPoint(1 / 1.35, W * 0.5, H * 0.5); }
+  else if (e.key === "0") { resetCamera(); }
 });
 
 function togglePlay() {
@@ -2556,6 +2682,75 @@ $("muteBtn").addEventListener("click", toggleMute);
 $("fsBtn").addEventListener("click", toggleFullscreen);
 $("hideBtn").addEventListener("click", () => setControlsHidden(true));
 $("showControlsBtn").addEventListener("click", () => setControlsHidden(false));
+$("zoomInBtn").addEventListener("click", () => zoomAtCanvasPoint(1.4, W * 0.5, H * 0.5));
+$("zoomOutBtn").addEventListener("click", () => zoomAtCanvasPoint(1 / 1.4, W * 0.5, H * 0.5));
+$("zoomResetBtn").addEventListener("click", resetCamera);
+
+// Mouse wheel / trackpad pinch zoom toward cursor
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const [cx, cy] = clientToCanvasXY(e.clientX, e.clientY);
+  const factor = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0022));
+  zoomAtCanvasPoint(factor, cx, cy);
+}, { passive: false });
+
+// Double-click canvas to reset zoom (or zoom in 2.2x if at 1x)
+canvas.addEventListener("dblclick", (e) => {
+  const [cx, cy] = clientToCanvasXY(e.clientX, e.clientY);
+  if (cam.zoom > 1.05) resetCamera();
+  else zoomAtCanvasPoint(2.4, cx, cy);
+});
+
+// Pointer drag-to-pan + two-finger touch pinch-zoom
+const activePointers = new Map();
+let dragLast = null;
+let pinchLastDist = 0;
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 && e.pointerType === "mouse") return;
+  activePointers.set(e.pointerId, [e.clientX, e.clientY]);
+  canvas.setPointerCapture?.(e.pointerId);
+  if (activePointers.size === 1) {
+    dragLast = clientToCanvasXY(e.clientX, e.clientY);
+    if (cam.zoom > 1.02) canvas.classList.add("panning");
+  } else if (activePointers.size === 2) {
+    dragLast = null;
+    const pts = Array.from(activePointers.values());
+    pinchLastDist = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+  }
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (activePointers.size === 2) {
+    const pts = Array.from(activePointers.values());
+    const dist = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+    if (pinchLastDist > 10 && dist > 10) {
+      const [mx, my] = clientToCanvasXY((pts[0][0] + pts[1][0]) * 0.5, (pts[0][1] + pts[1][1]) * 0.5);
+      zoomAtCanvasPoint(dist / pinchLastDist, mx, my);
+    }
+    pinchLastDist = dist;
+  } else if (dragLast && cam.zoom > 1.02) {
+    const cur = clientToCanvasXY(e.clientX, e.clientY);
+    cam.x += cur[0] - dragLast[0];
+    cam.y += cur[1] - dragLast[1];
+    dragLast = cur;
+    clampCamera();
+    if (!playing && DATA) renderFrame(progress, 0.016);
+  }
+});
+
+function endPointer(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchLastDist = 0;
+  if (activePointers.size === 0) {
+    dragLast = null;
+    canvas.classList.remove("panning");
+  }
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
 $("volSlider").addEventListener("input", (e) => audio.setVolume(+e.target.value));
 $("rangeSelect").addEventListener("change", (e) => setRange(e.target.value));
 $("speedToggle").addEventListener("click", (e) => {

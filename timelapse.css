@@ -16,6 +16,7 @@ html, body {
   width: 100%; height: 100%;
   object-fit: contain;
   display: block;
+  touch-action: none;
 }
 
 /* Splash gate */
@@ -150,6 +151,31 @@ kbd {
 .credit-corner a { color: #93c5fd; text-decoration: none; }
 .credit-corner a:hover { color: #fff; text-decoration: underline; }
 .credit-corner.hidden-ui { opacity: 0; pointer-events: none; }
+
+.zoom-controls {
+  position: absolute; top: 52px; right: 18px; z-index: 18;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: opacity 0.3s ease;
+}
+.zoom-controls.hidden-ui { opacity: 0; pointer-events: none; }
+.zoom-controls button {
+  width: 30px; height: 28px; border-radius: 8px;
+  background: rgba(9, 15, 29, 0.56); color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.14); backdrop-filter: blur(8px);
+  font: 600 0.82rem "JetBrains Mono", monospace; cursor: pointer;
+  display: grid; place-items: center; padding: 0;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.zoom-controls button:hover {
+  background: rgba(15, 23, 42, 0.88); color: #fff; border-color: rgba(255, 255, 255, 0.3);
+}
+#zoomResetBtn {
+  font-size: 0.68rem; color: #fde68a;
+  background: rgba(245, 158, 11, 0.24); border-color: rgba(245, 158, 11, 0.45);
+}
+#zoomResetBtn[hidden] { display: none; }
+#canvas.pannable { cursor: grab; }
+#canvas.panning { cursor: grabbing; }
 
 .scrubber-wrap { position: relative; margin-bottom: 0.55rem; }
 .scrubber-wrap.week-mode::after {

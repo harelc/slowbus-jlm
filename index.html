@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="timelapse.css?v=46">
+<link rel="stylesheet" href="timelapse.css?v=47">
 </head>
 <body>
   <div id="stage">
@@ -108,8 +108,15 @@
       <span aria-hidden="true">·</span>
       <a href="https://github.com/harelc/slowbus-jlm" target="_blank" rel="noopener">GitHub</a>
     </div>
+
+    <!-- Subtle map zoom controls (top-right below credit) -->
+    <div id="zoomControls" class="zoom-controls" aria-label="Map zoom controls">
+      <button id="zoomInBtn" type="button" title="Zoom in (+)">+</button>
+      <button id="zoomOutBtn" type="button" title="Zoom out (−)">−</button>
+      <button id="zoomResetBtn" type="button" hidden title="Reset zoom (0 or double-click)">1×</button>
+    </div>
   </div>
 
-  <script src="timelapse.js?v=46"></script>
+  <script src="timelapse.js?v=47"></script>
 </body>
 </html>
