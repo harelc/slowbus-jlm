@@ -43,7 +43,9 @@ def load_known_line_refs():
     try:
         with open("data/jlm-lines.json") as f:
             for item in json.load(f):
-                ln = str(item["line"])
+                ln = str(item["line"]).strip()
+                if not ln or ln in ("NaN", "nan", "None"):
+                    continue
                 for lr in item.get("lineRefs", []):
                     ref_to_line[int(lr)] = ln
     except Exception:
@@ -56,11 +58,13 @@ def resolve_missing_line_refs(missing_refs, ref_to_line):
         return
     refs = sorted(missing_refs)
     print(f"  Resolving {len(refs)} extra line_refs via gtfs_routes...", flush=True)
-    # Fetch in chunks by querying gtfs_routes for line_ref
+    # Query /gtfs_routes/list with plural `line_refs` (singular `line_ref` is ignored by the API!)
     def lookup(lr):
-        rows = api_get("/gtfs_routes/list", {"line_ref": lr, "limit": 1, "order_by": "date desc"}, timeout=15)
-        if rows and rows[0].get("route_short_name"):
-            return lr, str(rows[0]["route_short_name"])
+        rows = api_get("/gtfs_routes/list", {"line_refs": lr, "limit": 5, "order_by": "date desc"}, timeout=15)
+        for row in rows or []:
+            nm = str(row.get("route_short_name") or "").strip()
+            if nm and nm not in ("NaN", "nan", "None"):
+                return lr, nm
         return lr, None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
@@ -108,7 +112,7 @@ def ny(lat):
     return 0 if v < 0 else (10000 if v > 10000 else v)
 
 
-def fetch_day(day_idx, ref_to_line):
+def fetch_day(day_idx, ref_to_line, aligner=None):
     base_date = datetime.datetime(2026, 11, 15, 0, 0, 0) + datetime.timedelta(days=day_idx)
     step_min = 3
     windows = []
@@ -196,6 +200,8 @@ def fetch_day(day_idx, ref_to_line):
             dedup = good
 
         ln = ref_to_line.get(lr, "")
+        if aligner is not None:
+            dedup = aligner.align_ride(lr, ln, op, dedup)
         if ln:
             lidx = line_to_idx.get(ln)
             if lidx is None:
@@ -227,19 +233,39 @@ def fetch_day(day_idx, ref_to_line):
                 f.write(struct.pack("<HHH", t2, x, y))
 
     mb = os.path.getsize(out_path) / (1024 * 1024)
-    print(f"  Wrote {out_path}: {len(cleaned_rides)} rides, {len(line_names)} lines, {mb:.2f} MB in {time.time()-t0:.1f}s", flush=True)
+    unlabeled = sum(1 for r in cleaned_rides if r[1] == 0xFFFF)
+    extra = ""
+    if aligner is not None:
+        s = aligner.stats
+        tot_s = max(1, s["gtfs_segs"] + s["osm_segs"] + s["raw_segs"])
+        extra = (
+            f" | GTFS={100*s['gtfs_segs']/tot_s:.1f}%, "
+            f"OSM={100*s['osm_segs']/tot_s:.1f}%, raw={100*s['raw_segs']/tot_s:.1f}%"
+        )
+    print(
+        f"  Wrote {out_path}: {len(cleaned_rides)} rides ({unlabeled} unlabeled), "
+        f"{len(line_names)} lines, {mb:.2f} MB in {time.time()-t0:.1f}s{extra}",
+        flush=True,
+    )
 
 
 def main():
-    days = [int(a) for a in sys.argv[1:]] if len(sys.argv) > 1 else [0, 6, 1, 2, 3, 4, 5]
+    days = [int(a) for a in sys.argv[1:] if a.isdigit()] or [0, 6, 1, 2, 3, 4, 5]
     ref_to_line = load_known_line_refs()
-    print(f"Loaded {len(ref_to_line)} known lineRefs from data/jlm-lines.json", flush=True)
+    aligner = None
+    if os.path.exists("/tmp/jlm-gtfs-shapes.pkl"):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from align_gtfs import HybridRoadAligner
+        aligner = HybridRoadAligner()
+        for rid, (nm, _ag) in aligner.route_info.items():
+            ref_to_line.setdefault(rid, nm)
+    print(f"Loaded {len(ref_to_line)} known lineRefs (jlm-lines + MOT GTFS)", flush=True)
     for d in days:
         out_path = f"data/real-day{d}.bin"
         if os.path.exists(out_path) and "--force" not in sys.argv:
             print(f"  Skipping day {d} ({out_path} already exists)", flush=True)
             continue
-        fetch_day(d, ref_to_line)
+        fetch_day(d, ref_to_line, aligner=aligner)
 
 
 if __name__ == "__main__":

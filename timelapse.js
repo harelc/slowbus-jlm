@@ -1075,9 +1075,11 @@ function drawWarmStreetGlow(solar) {
     buckets[b].push(idx);
   }
 
+  const ms = camMarkerScale();
+  const zoomFade = cam.zoom > 1.2 ? clamp(1 - (cam.zoom - 1.2) * 0.14, 0.45, 1) : 1;
   const bucketMid = [0.22, 0.42, 0.63, 0.88];
-  const haloWidths = [4.2, 5.8, 7.2, 8.8];
-  const coreWidths = [1.3, 1.6, 2.0, 2.5];
+  const haloWidths = [4.2 * ms, 5.8 * ms, 7.2 * ms, 8.8 * ms];
+  const coreWidths = [1.3 * ms, 1.6 * ms, 2.0 * ms, 2.5 * ms];
 
   // Pass 1: wide warm halo (max 4 stroke calls)
   for (let b = 0; b < 4; b++) {
@@ -1089,7 +1091,7 @@ function drawWarmStreetGlow(solar) {
       ctx.moveTo(r.x1, r.y1);
       ctx.lineTo(r.x2, r.y2);
     }
-    ctx.strokeStyle = rgbStr(haloCol, bucketMid[b] * (isNight ? 0.12 : 0.08));
+    ctx.strokeStyle = rgbStr(haloCol, bucketMid[b] * (isNight ? 0.10 : 0.065) * zoomFade);
     ctx.lineWidth = haloWidths[b];
     ctx.stroke();
   }
@@ -1104,7 +1106,7 @@ function drawWarmStreetGlow(solar) {
       ctx.moveTo(r.x1, r.y1);
       ctx.lineTo(r.x2, r.y2);
     }
-    ctx.strokeStyle = rgbStr(coreCol, bucketMid[b] * (isNight ? 0.16 : 0.12));
+    ctx.strokeStyle = rgbStr(coreCol, bucketMid[b] * (isNight ? 0.13 : 0.10) * zoomFade);
     ctx.lineWidth = coreWidths[b];
     ctx.stroke();
   }
@@ -2202,7 +2204,7 @@ function loadRealDay(dayIdx) {
   if (realDayPromises[dayIdx]) return realDayPromises[dayIdx];
   realDayPromises[dayIdx] = (async () => {
     try {
-      const r = await fetch(`data/real-day${dayIdx}.bin?v=51`);
+      const r = await fetch(`data/real-day${dayIdx}.bin?v=52`);
       if (!r.ok) return null;
       const buf = await r.arrayBuffer();
       const dv = new DataView(buf);
