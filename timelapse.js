@@ -686,6 +686,16 @@ function setRange(val) {
   renderFrame(0, 0.016);
 }
 
+// Start position matching the viewer's own clock, as reported by the browser:
+// weekday (getDay(): Sun=0..Sat=6 — same ordering as the Nov 15–21 dataset)
+// + local time-of-day, mapped into the full-week timeline.
+function browserStartProgress() {
+  const now = new Date();
+  const weekMin = now.getDay() * 1440 + now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  const spanMin = Math.max(1, (viewCount - 1) * (DATA?.meta?.stepMinutes || 20));
+  return clamp(weekMin / spanMin, 0, 0.999999);
+}
+
 function buildDayMarkers() {
   const el = $("dayMarkers");
   const wrap = el.closest(".scrubber-wrap");
@@ -3125,8 +3135,10 @@ async function boot() {
     initLinePicker();
     loadLightRail();   // Official GTFS 7-day Light Rail L1 & L3
     loadAllRealDays(); // Stream 100% real GPS trajectories (real-day0..6.bin)
-    // Warm preview frame behind splash (Sunday evening rush)
-    for (let k = 0; k < 20; k++) renderFrame(0.098, 0.04);
+    // Start on the browser's local day & time; warm preview behind splash
+    progress = browserStartProgress();
+    $("scrubber").value = Math.round(progress * 1000);
+    for (let k = 0; k < 20; k++) renderFrame(progress, 0.04);
 
     $("startBtn").disabled = false;
     $("startLabel").textContent = "Begin 7-Day Timelapse (with Sound)";
