@@ -2234,6 +2234,22 @@ function interpolateTrip(pts, m) {
   return [x, y, i0, ux, uy];
 }
 
+// Known data seams: Stride collector outages were backfilled with the same
+// weekday one week earlier (scripts/fetch_real_week.py), hard-spliced at
+// Wed 21:40 (real Nov 18 -> Nov 11) and Thu 17:00 (Nov 12 -> real Nov 19).
+// At the splice ~770 rides end within a minute and ~790 start ~3 min later
+// (Thu fleet: 924 -> 105 -> 963), which reads as sudden death. Crossfade the
+// fleet through the seam instead. The HUD count still tells the truth.
+const DATA_SEAMS = [{ day: 3, minute: 1299 }, { day: 4, minute: 1021 }];
+function seamFade(dayIdx, minuteOfDay) {
+  let f = 1;
+  for (const s of DATA_SEAMS) {
+    if (s.day !== dayIdx) continue;
+    f = Math.min(f, clamp(Math.abs(minuteOfDay - s.minute) / 6, 0.07, 1));
+  }
+  return f;
+}
+
 // Real speed (km/h) of a trip at minute `m`: derivative of displacement.
 // Primary: smoothed displacement over the preceding 2 minutes of the
 // interpolated trajectory. Fallback: the raw ping pair straddling `m`.
@@ -2320,6 +2336,7 @@ function drawSelectedLinesMode(weekMin, solar) {
   const combinedCurve = new Float32Array(viewCount);
 
   ctx.save();
+  ctx.globalAlpha = seamFade(Math.min(6, Math.floor(weekMin / 1440)), weekMin % 1440);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
@@ -2817,7 +2834,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
     for (let i = 0; i < paths.length; i++) {
       traceSmoothPolyline(paths[i], 120000);
     }
-    ctx.strokeStyle = rgbStr(cols[g], isNight ? 0.42 : 0.36);
+    ctx.strokeStyle = rgbStr(cols[g], (isNight ? 0.42 : 0.36) * seamFade(dayIdx, minuteOfDay));
     ctx.stroke();
   }
   // 2) Batched halos (6 fills total!)
@@ -2830,7 +2847,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
       ctx.moveTo(h[i] + rHalo, h[i + 1]);
       ctx.arc(h[i], h[i + 1], rHalo, 0, Math.PI * 2);
     }
-    ctx.fillStyle = rgbStr(cols[g], isNight ? 0.32 : 0.24);
+    ctx.fillStyle = rgbStr(cols[g], (isNight ? 0.32 : 0.24) * seamFade(dayIdx, minuteOfDay));
     ctx.fill();
   }
 
@@ -2847,11 +2864,12 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
     for (let i = 0; i < h.length; i += 5) {
       traceArrowHead(h[i], h[i + 1], h[i + 2], h[i + 3], tip, back, wing, notch);
     }
-    ctx.fillStyle = rgbStr(cols[g], 0.98);
+    ctx.fillStyle = rgbStr(cols[g], 0.98 * seamFade(dayIdx, minuteOfDay));
     ctx.fill();
   }
 
   // 4) Real GTFS route number labels (tight per-label AABB collision + 4-way fallback placement)
+  ctx.globalAlpha = seamFade(dayIdx, minuteOfDay);
   const invZ = 1 / cam.zoom;
   const vx0 = -cam.x * invZ - 48 * ms;
   const vy0 = -cam.y * invZ - 24 * ms;
@@ -2954,7 +2972,7 @@ function renderFrame(p, dt) {
     drawRoadBase(solar);
     drawRoadSpeedOverlay(solar, weekMin);
     drawStops(solar);
-    if (!hideBuses) drawStationEvents(solar);
+    if (!hideBuses && seamFade(dayIdx, minuteOfDay) > 0.35) drawStationEvents(solar);
     const res = drawSelectedLinesMode(weekMin, solar);
     drawLandmarks(solar);
     ctx.restore();
@@ -2985,7 +3003,7 @@ function renderFrame(p, dt) {
     if (!hideBuses) drawWarmStreetGlow(solar); // density glow would muddy the speed colours
     drawRoadSpeedOverlay(solar, state.dayIdx * 1440 + state.minuteOfDay);
     drawStops(solar);
-    if (!hideBuses) drawStationEvents(solar);
+    if (!hideBuses && seamFade(state.dayIdx, state.minuteOfDay) > 0.35) drawStationEvents(solar);
     const realRes = drawRealAllBuses(state.dayIdx, state.minuteOfDay, solar);
     const railCount = hideBuses ? 0 : drawLightRail(state.dayIdx, state.minuteOfDay, solar);
     if (realRes.activeCount !== null) {

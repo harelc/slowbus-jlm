@@ -84,6 +84,17 @@ data (roads, GPS trajectories, stop positions, pre-rendered bases) is rebuilt
 for the new size. Consequence: WebM recordings capture at the current window
 aspect/logical size rather than a fixed 1920×1080.
 
+## Known data seams
+
+Stride collector outages were backfilled with the same weekday one week
+earlier (`scripts/fetch_real_week.py`): Wed 2026-11-18 21:40→ is Nov 11, and
+Thu 2026-11-19 00:00–17:00 is Nov 12. At each splice ~770 rides end within a
+minute and ~790 start ~3 min later (Thu 17:00: fleet 924 → 105 → 963), which
+read as a sudden death of the fleet. The timelapse crossfades buses through
+the two seams (`DATA_SEAMS` in `timelapse.js`, ±6 min); the HUD bus count
+still shows the true dip. A ride-level re-stitch of the source data would be
+the full fix.
+
 ## Timelapse layers (`index.html`)
 
 Two opt-in overlays on the 7-day real-GPS timelapse, both off by default:
