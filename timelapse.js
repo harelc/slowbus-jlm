@@ -40,7 +40,7 @@ let mapRect = { x: 0, y: 0, w: W, h: H };
 
 let playing = false;
 let progress = 0;       // 0..1 across active range
-let dayDurationSec = 45; // seconds per 24h day (Full Week is automatically 7x longer!)
+let dayDurationSec = 120; // 1× = 120s per 24h day (Full Week is automatically 7x longer!)
 function effectiveDurationSec() {
   return dayDurationSec * ($("rangeSelect").value === "week" ? 7 : 1);
 }
@@ -1442,46 +1442,52 @@ function drawHUD(state, solar) {
   ctx.fillStyle = rgbStr(inkPrimary, 0.98);
   ctx.fillText(`${hh}:${mm}`, x0 + 88, y0 + 161);
 
-  // --- BOTTOM-LEFT: Active Bus Counter + Operator Legend + 7-Day / 24h Heartbeat Waveform ---
-  const bw = 430, bh = 192;
-  const bx = vis.x + (compactHUD ? 26 : 56);
-  const by = vis.y + vis.h - hudBottomInset - (bh + 30) + 18;
-  ctx.fillStyle = rgbStr(panelBg, lerp(0.64, 0.76, lightUI));
+  // --- Active Bus Counter + Operator Legend + 7-Day / 24h Heartbeat Waveform ---
+  // Desktop: large bottom-left panel. Mobile (compactHUD): a much smaller,
+  // de-emphasised version tucked into the bottom-right corner — count +
+  // mini waveform only, no operator legend / subtitle.
+  const bw = compactHUD ? 248 : 430, bh = compactHUD ? 74 : 192;
+  const hudPad = compactHUD ? 10 : 18, hudExtra = compactHUD ? 20 : 30;
+  const bx = compactHUD ? vis.x + vis.w - bw - hudPad - 12 : vis.x + 56;
+  const by = vis.y + vis.h - hudBottomInset - (bh + hudExtra) + hudPad;
+  ctx.fillStyle = rgbStr(panelBg, lerp(compactHUD ? 0.5 : 0.64, compactHUD ? 0.62 : 0.76, lightUI));
   ctx.strokeStyle = rgbStr(panelEdge, 0.16);
   ctx.lineWidth = 1;
-  roundRect(ctx, bx - 18, by - 18, bw + 36, bh + 30, 14);
+  roundRect(ctx, bx - hudPad, by - hudPad, bw + hudPad * 2, bh + hudExtra, compactHUD ? 10 : 14);
   ctx.fill(); ctx.stroke();
 
-  ctx.font = '600 11px "JetBrains Mono", monospace';
+  ctx.font = compactHUD ? '600 8.5px "JetBrains Mono", monospace' : '600 11px "JetBrains Mono", monospace';
   ctx.fillStyle = rgbStr(inkMuted, 0.92);
-  ctx.fillText("ACTIVE BUSES ON JERUSALEM STREETS", bx, by + 4);
+  ctx.fillText(compactHUD ? "ACTIVE BUSES" : "ACTIVE BUSES ON JERUSALEM STREETS", bx, by + 4);
 
-  ctx.font = '500 40px "JetBrains Mono", monospace';
+  ctx.font = compactHUD ? '500 18px "JetBrains Mono", monospace' : '500 40px "JetBrains Mono", monospace';
   ctx.fillStyle = rgbStr(inkPrimary, 0.98);
-  ctx.fillText(String(Math.round(displayBuses)), bx, by + 46);
+  ctx.fillText(String(Math.round(displayBuses)), bx + (compactHUD ? 92 : 0), by + (compactHUD ? 6 : 46));
 
-  ctx.font = '400 11px "JetBrains Mono", monospace';
-  ctx.fillStyle = rgbStr(inkMuted, 0.88);
-  ctx.fillText("1 dot ≈ 1 active bus · colored by operator", bx + 118, by + 38);
+  if (!compactHUD) {
+    ctx.font = '400 11px "JetBrains Mono", monospace';
+    ctx.fillStyle = rgbStr(inkMuted, 0.88);
+    ctx.fillText("1 dot ≈ 1 active bus · colored by operator", bx + 118, by + 38);
 
-  // Compact 6-operator color key row
-  let lx = bx;
-  const ly = by + 66;
-  ctx.font = '500 10px "JetBrains Mono", monospace';
-  for (let o = 0; o < OPERATOR_META.length; o++) {
-    const op = OPERATOR_META[o];
-    const col = mixRGB(op.night, op.day, daylight);
-    ctx.fillStyle = rgbStr(col, 0.98);
-    ctx.beginPath();
-    ctx.arc(lx + 3.5, ly - 3, 3.6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = rgbStr(inkPrimary, 0.88);
-    ctx.fillText(op.name, lx + 10.5, ly);
-    lx += ctx.measureText(op.name).width + 18;
+    // Compact 6-operator color key row
+    let lx = bx;
+    const ly = by + 66;
+    ctx.font = '500 10px "JetBrains Mono", monospace';
+    for (let o = 0; o < OPERATOR_META.length; o++) {
+      const op = OPERATOR_META[o];
+      const col = mixRGB(op.night, op.day, daylight);
+      ctx.fillStyle = rgbStr(col, 0.98);
+      ctx.beginPath();
+      ctx.arc(lx + 3.5, ly - 3, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = rgbStr(inkPrimary, 0.88);
+      ctx.fillText(op.name, lx + 10.5, ly);
+      lx += ctx.measureText(op.name).width + 18;
+    }
   }
 
   // Heartbeat waveform
-  const wx = bx, wy = by + 90, ww = bw, wh = 66;
+  const wx = bx, wy = by + (compactHUD ? 18 : 90), ww = bw, wh = compactHUD ? 38 : 66;
   const lineMode = selectedLineKeys.size > 0;
   const curve = lineMode ? state.lineCurve : null;
   const maxB = lineMode ? Math.max(1, state.lineMaxB || 1) : viewMaxBuses;
@@ -1491,7 +1497,7 @@ function drawHUD(state, solar) {
     ctx.strokeStyle = rgbStr(inkMuted, 0.34);
     ctx.lineWidth = 1;
     const labels = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-    ctx.font = '600 9.5px "JetBrains Mono", monospace';
+    ctx.font = compactHUD ? '600 7.5px "JetBrains Mono", monospace' : '600 9.5px "JetBrains Mono", monospace';
     ctx.textAlign = "center";
     for (let d = 0; d < 7; d++) {
       const dx = wx + d * colW;
@@ -1503,7 +1509,7 @@ function drawHUD(state, solar) {
     }
     ctx.textAlign = "left";
   } else {
-    ctx.font = '500 10px "JetBrains Mono", monospace';
+    ctx.font = compactHUD ? '500 7.5px "JetBrains Mono", monospace' : '500 10px "JetBrains Mono", monospace';
     ctx.fillStyle = rgbStr(inkMuted, 0.78);
     ["00", "06", "12", "18", "24"].forEach((t, k) => {
       ctx.fillText(t + ":00", wx + (k / 4) * (ww - 30), wy + wh + 14);
@@ -1554,7 +1560,7 @@ function drawHUD(state, solar) {
     ctx.font = '400 11px "JetBrains Mono", monospace';
     ctx.fillStyle = rgbStr(inkMuted, 0.72);
     ctx.textAlign = "right";
-    ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · slowbus-jlm · Data: Open Bus Stride (Hasadna) & OpenStreetMap", W - 40, H - 24);
+    ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · jlm-buses.netlify.app · Data: Open Bus Stride (Hasadna) & OpenStreetMap", W - 40, H - 24);
     ctx.textAlign = "left";
   }
 
