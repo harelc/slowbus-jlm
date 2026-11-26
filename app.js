@@ -54,7 +54,7 @@ function setStatus(t) {
   statusText = t; $("status").textContent = t;
   if (loadStarted) {
     $("loadLabel").textContent = `${t} ${Math.round(progressPct)}%`;
-    $("stats").innerHTML = `⏳ ${t}<br><span class="hint">${Math.round((Date.now() - loadStarted) / 1000)}s elapsed — Stride/road servers can take 20–60s. You can Cancel.</span>`;
+    $("stats").innerHTML = `⏳ ${t}<br><span class="hint">${Math.round((Date.now() - loadStarted) / 1000)}s elapsed — SIRI/road servers can take 20–60s. You can Cancel.</span>`;
   }
 }
 function color(v) { return v < 8 ? "#d7301f" : v < 15 ? "#fc8d59" : v < 25 ? "#f2c94c" : v < 35 ? "#91cf60" : "#1a9850"; }
@@ -68,7 +68,7 @@ function jerusalemIso(date, time) {
   return `${date}T${time}:00${off[1] || "+02"}:${off[2] || "00"}`;
 }
 // Fetch exactly the shown viewport — no fixed Jerusalem box, no padding.
-// (Stride filters server-side by this bbox, so zooming in genuinely fetches less.)
+// (The API filters server-side by this bbox, so zooming in genuinely fetches less.)
 function queryBbox() {
   const b = map.getBounds();
   return { latMin: b.getSouth(), latMax: b.getNorth(), lonMin: b.getWest(), lonMax: b.getEast() };
@@ -97,7 +97,7 @@ async function fetchPoints(bb, signal) {
       lon__greater_or_equal: bb.lonMin, lon__lower_or_equal: bb.lonMax,
     });
     const r = await fetchT(`${API}/siri_vehicle_locations/list?${q}`, signal, 30000);
-    if (!r.ok) throw new Error(`Stride API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!r.ok) throw new Error(`SIRI API ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const page = await r.json();
     pts.push(...page); setProgress(2 + 58 * pts.length / max); setStatus(`Fetching SIRI points… ${pts.length}`);
     return page.length;
@@ -110,7 +110,7 @@ async function fetchPoints(bb, signal) {
   fetchCapped = pts.length >= max; // hit the user cap: viewport may contain more points than shown
   const raw = pts.filter(p => Number.isFinite(p.velocity) && p.velocity <= MAX_VEL)
                  .map(p => ({ lat: p.lat, lon: p.lon, v: p.velocity, line: p.siri_route__line_ref, t: p.recorded_at_time }));
-  // Session cache only: historical windows are effectively immutable, but Stride can backfill,
+  // Session cache only: historical windows are effectively immutable, but the source can backfill,
   // so we don't persist across page sessions. Capped results are cached too, but only ever
   // served back for the identical window+viewport+cap key, where they are exactly what a refetch returns first.
   cacheSet(pointsCache, cacheKey, { raw, capped: fetchCapped }, 5);

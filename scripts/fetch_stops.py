@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch all Jerusalem bus + light-rail station coordinates for the timelapse
-week (pinned to Sat 2026-11-21) from Open Bus Stride GTFS stops and pack into
+week (pinned to Sat 2026-11-21) from Hasadna GTFS stops (SIRI API) and pack into
 a compact static file: data/jlm-stops.json.
 
 The browser never calls the API for this — it loads the frozen file, same as

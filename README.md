@@ -1,7 +1,7 @@
 # SlowBus JLM — Jerusalem bus speeds on an OSM map
 
 A zero-build map viewer that overlays **average bus speeds aggregated onto roads**
-in Jerusalem, from the [Open Bus Stride API](https://open-bus-stride-api.hasadna.org.il/docs)
+in Jerusalem, from [Hasadna's SIRI API](https://open-bus-stride-api.hasadna.org.il/docs)
 (Hasadna / Public Knowledge Workshop). No API key, no backend, no build step.
 
 ## Run
@@ -35,7 +35,7 @@ Pick a date + time window (default: yesterday 07:00–07:30 Asia/Jerusalem), cli
   The median (in popups/stats) is usually the more robust figure.
 - Road tiles are a free community service. If they fail,
   the app automatically falls back to Grid mode (squares) and says so in the stats panel.
-- Data lag/coverage is whatever Stride's SIRI ETL has ingested; empty windows
+- Data lag/coverage is whatever the SIRI ETL has ingested; empty windows
   (nights, Shabbat mornings, future dates) return no points — the app reports that.
 
 ## Why not the `openbus-mcp` MCP server?
@@ -86,7 +86,7 @@ aspect/logical size rather than a fixed 1920×1080.
 
 ## Known data seams
 
-Stride collector outages were backfilled with the same weekday one week
+Hasadna collector outages were backfilled with the same weekday one week
 earlier (`scripts/fetch_real_week.py`): Wed 2026-11-18 21:40→ is Nov 11, and
 Thu 2026-11-19 00:00–17:00 is Nov 12. At each splice ~770 rides end within a
 minute and ~790 start ~3 min later (Thu 17:00: fleet 924 → 105 → 963), which
@@ -117,14 +117,14 @@ Two opt-in overlays on the 7-day real-GPS timelapse, both off by default:
   computation keeps running underneath; turning the overlay off restores
   the buses).
 - **📍 Stops (`S`)** — all 2,053 Jerusalem bus & light-rail stations inside
-  the map bbox, frozen by `scripts/fetch_stops.py` from Stride
+  the map bbox, frozen by `scripts/fetch_stops.py` from the SIRI API
   `/gtfs_stops/list` (`city=ירושלים`, 2026-11-21) into
   `data/jlm-stops.json` (lazy-loaded on first use). Names appear at zoom ≥ 2.4×.
 
 ## Files
 
 - `index.html` + `timelapse.js` / `timelapse.css` — 7-day timelapse (default page)
-- `speeds.html` + `app.js` / `styles.css` — page, controls, legend, method notes; Stride fetching/pagination, vector-tile road fetch/decoder, snapping, aggregation, rendering
+- `speeds.html` + `app.js` / `styles.css` — page, controls, legend, method notes; SIRI API fetching/pagination, vector-tile road fetch/decoder, snapping, aggregation, rendering
 - `scripts/fetch_stops.py` — freeze GTFS stop coordinates into `data/jlm-stops.json`
 
-Data: © Open Bus Stride / Hasadna (SIRI, via Israel MOT). Map: © OpenStreetMap contributors.
+Data: © Hasadna (SIRI, via Israel MOT). Map: © OpenStreetMap contributors.

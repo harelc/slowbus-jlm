@@ -210,7 +210,7 @@ function drawRoadSpeedOverlay(solar, absWeekMin) {
 // --- Opt-in all-stations layer ----------------------------------------------
 // Coordinates were NOT in the repo for bus stops (only unnamed light-rail
 // pattern stops in jlm-lightrail.json); scripts/fetch_stops.py froze all
-// 2,053 GTFS stops inside the bbox from Stride /gtfs_stops/list
+// 2,053 GTFS stops inside the bbox from the SIRI API /gtfs_stops/list
 // (city=ירושלים, 2026-11-21) into data/jlm-stops.json. Lazy-loaded on
 // first use so the default experience pays nothing for it.
 let stopsOverlay = false;
@@ -792,7 +792,7 @@ function prerenderRoadBases() {
   labelSpritesDay   = makeLabelCache(OPERATOR_COLORS_DAY,   "rgba(246, 241, 232, 0.92)");
 }
 
-// 6 real Jerusalem transit operators (verified from Open Bus Stride GTFS / SIRI operator_ref)
+// 6 real Jerusalem transit operators (verified from Hasadna GTFS / SIRI operator_ref)
 // 0: Egged (3), 1: Superbus (16), 2: Extra JLM (38), 3: East JLM (42..51), 4: Kavim/Tnufa, 5: Light Rail L1/L3 (21)
 const OPERATOR_META = [
   { name: "Egged",       night: [ 52, 232, 132], day: [ 16, 134,  68] }, // 0: Iconic Egged Green
@@ -1707,7 +1707,7 @@ function drawHUD(state, solar) {
 
   ctx.font = '600 12px "JetBrains Mono", monospace';
   ctx.fillStyle = phase.accent;
-  ctx.fillText(`OPEN BUS STRIDE · JERUSALEM · NOV ${dateNum}, 2026`, x0, y0);
+  ctx.fillText(`BUS TELEMETRY · JERUSALEM · NOV ${dateNum}, 2026`, x0, y0);
 
   ctx.font = '400 44px "Instrument Serif", Georgia, serif';
   ctx.fillStyle = rgbStr(inkPrimary, 0.98);
@@ -1872,7 +1872,7 @@ function drawHUD(state, solar) {
     ctx.font = '400 11px "JetBrains Mono", monospace';
     ctx.fillStyle = rgbStr(inkMuted, 0.72);
     ctx.textAlign = "right";
-    ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · jlm-buses.netlify.app · Data: Open Bus Stride (Hasadna) & OpenStreetMap", W - 40, H - 24);
+    ctx.fillText("© Harel Cain (הראל קין) · CC BY-NC-SA 4.0 · jlm-buses.netlify.app · Data: Hasadna (SIRI via Israel MOT) & OpenStreetMap", W - 40, H - 24);
     ctx.textAlign = "left";
   }
 
@@ -1962,7 +1962,7 @@ function hydrateCachedLine(rec) {
 }
 
 // ============================================================================
-// Real GPS Per-Line Loader & Playback Engine (Open Bus Stride — 7 Days!)
+// Real GPS Per-Line Loader & Playback Engine (Hasadna SIRI — 7 Days!)
 // ============================================================================
 const STRIDE_API = "https://open-bus-stride-api.hasadna.org.il";
 const WEEK_START_UTC_MS = Date.UTC(2026, 10, 14, 22, 0, 0); // Sun Nov 15, 2026 00:00 Asia/Jerusalem
@@ -2234,7 +2234,7 @@ function interpolateTrip(pts, m) {
   return [x, y, i0, ux, uy];
 }
 
-// Known data seams: Stride collector outages were backfilled with the same
+// Known data seams: Hasadna collector outages were backfilled with the same
 // weekday one week earlier (scripts/fetch_real_week.py), hard-spliced at
 // Wed 21:40 (real Nov 18 -> Nov 11) and Thu 17:00 (Nov 12 -> real Nov 19).
 // At the splice ~770 rides end within a minute and ~790 start ~3 min later

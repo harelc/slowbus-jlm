@@ -4,7 +4,7 @@ Build real Jerusalem road geometry + 7-day SIRI bus telemetry for the SlowBus JL
 
 Sources:
   - Road network: Versatiles OSM vector tiles (z14, `streets` layer)
-  - Bus telemetry: Open Bus Stride API (/siri_vehicle_locations/list),
+  - Bus telemetry: Hasadna SIRI API (/siri_vehicle_locations/list),
     Sun 2026-11-15 00:00 -> Sat 2026-11-21 23:40 Asia/Jerusalem (+02:00),
     2-minute snapshot every 20 minutes (504 slices across the full week).
 
@@ -360,7 +360,7 @@ def main():
             "bbox": [LAT_MIN, LON_MIN, LAT_MAX, LON_MAX],
             "roadCount": len(roads_out) // 5,
             "activeRoadCount": len(active_ids),
-            "source": "Open Bus Stride API (Hasadna) & OpenStreetMap via Versatiles",
+            "source": "Hasadna SIRI API & OpenStreetMap via Versatiles",
         },
         "landmarks": landmarks,
         "roads": roads_out,

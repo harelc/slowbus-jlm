@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch 100% real Jerusalem SIRI GPS vehicle trajectories for a full week
-(Sun 2026-11-15 -> Sat 2026-11-21) from Open Bus Stride and pack into
+(Sun 2026-11-15 -> Sat 2026-11-21) from Hasadna's SIRI API and pack into
 compact per-day binary files: data/real-day0.bin .. data/real-day6.bin.
 
 Outage backfill (same weekday one week earlier, real GPS data):
@@ -118,7 +118,7 @@ def fetch_day(day_idx, ref_to_line, aligner=None):
     windows = []
     for m in range(0, 1440, step_min):
         dt0 = base_date + datetime.timedelta(minutes=m)
-        # Apply real-data backfill for Open Bus Stride collector outages
+        # Apply real-data backfill for Hasadna collector outages
         if day_idx == 3 and m >= 21 * 60 + 40:  # Wed late evening
             dt0 = dt0 - datetime.timedelta(days=7)
         elif day_idx == 4 and m < 17 * 60:      # Thu 00:00..17:00

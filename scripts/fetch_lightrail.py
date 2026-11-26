@@ -2,7 +2,7 @@
 """
 Fetch 7-day official GTFS timetable + exact station coordinates for
 Jerusalem Light Rail L1 and L3 (Kfir, operator_ref=21, route_type=0)
-for Sun 2026-11-15 -> Sat 2026-11-21 from Open Bus Stride.
+for Sun 2026-11-15 -> Sat 2026-11-21 from Hasadna's SIRI/GTFS API.
 Output: data/jlm-lightrail.json
 """
 import datetime
