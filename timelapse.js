@@ -46,6 +46,8 @@ function effectiveDurationSec() {
 }
 let lastFrameTs = 0;
 let lastTickIndex = -1;
+let tickPhase = 0;     // integrated tick count (allows gradual per-day tempo drift)
+let lastMusicP = -1;   // progress at last music update, for tickPhase integration
 let lastHourMark = -1;
 let displayBuses = 0;
 
@@ -89,6 +91,26 @@ class ClockSoundtrack {
     this.beatCount = 0;
     this.started = false;
     this.currentChord = [146.83, 220.00, 261.63, 329.63]; // Dm9
+    // Slight per-weekday character (see dayCharacter): tempo/pitch factors,
+    // applied to every voice together so the harmony stays consonant.
+    this.tempoFactor = 1;
+    this.pitchFactor = 1;
+    this.arpOffset = 0;
+  }
+
+  // Music varies gradually & slightly per day of week: each day's tempo and
+  // tuning are anchored at its noon and linearly interpolated toward the
+  // next day's noon (Sat wraps to Sun), so nothing ever jumps at midnight.
+  // Sun slowest/lowest, building through Thu, easing Fri, calmest on Shabbat.
+  dayCharacter(dayIdx, minuteOfDay) {
+    const TEMPO = [0.95, 0.97, 1.00, 1.02, 1.04, 1.01, 0.92]; // Sun..Sat
+    const CENTS = [-20, -10, 0, 10, 20, 8, -30];               // tuning drift, ±⅙ semitone
+    const x = (((dayIdx + minuteOfDay / 1440) - 0.5) % 7 + 7) % 7;
+    const i = Math.floor(x), f = x - i, j = (i + 1) % 7;
+    return {
+      tempo: lerp(TEMPO[i], TEMPO[j], f),
+      pitch: Math.pow(2, lerp(CENTS[i], CENTS[j], f) / 1200),
+    };
   }
 
   init() {
@@ -161,7 +183,11 @@ class ClockSoundtrack {
     }
   }
 
-  updateAtmosphere(daylight, intensity, active, minuteOfDay = 0, isShabbat = false) {
+  updateAtmosphere(daylight, intensity, active, minuteOfDay = 0, isShabbat = false, dayIdx = 0) {
+    const dc = this.dayCharacter(dayIdx, minuteOfDay);
+    this.tempoFactor = dc.tempo;
+    this.pitchFactor = dc.pitch;
+    this.arpOffset = dayIdx * 3; // rotate celesta pattern a little each day
     if (!this.started) return;
     const now = this.ctx.currentTime;
     const clampedI = Math.max(0, Math.min(1, intensity));
@@ -194,7 +220,7 @@ class ClockSoundtrack {
     // Fewer chord voices when quiet, full lush 4-note voicing as buses build up
     const voiceCount = intensity < 0.12 ? 2 : intensity < 0.35 ? 3 : this.currentChord.length;
     for (let idx = 0; idx < voiceCount; idx++) {
-      const f = this.currentChord[idx];
+      const f = this.currentChord[idx] * this.pitchFactor;
       const osc = this.ctx.createOscillator();
       const g = this.ctx.createGain();
       osc.type = "sine";
@@ -223,7 +249,7 @@ class ClockSoundtrack {
     const osc = this.ctx.createOscillator();
     const og = this.ctx.createGain();
     osc.type = "sine";
-    const f0 = isSubTick ? 880 : (isTick ? 587.33 : 440.00);
+    const f0 = (isSubTick ? 880 : (isTick ? 587.33 : 440.00)) * this.pitchFactor;
     osc.frequency.setValueAtTime(f0, now);
     osc.frequency.exponentialRampToValueAtTime(f0 * 0.72, now + 0.032);
     const amp = isSubTick ? (0.012 + intensity * 0.038) : (0.032 + intensity * 0.082);
@@ -265,7 +291,7 @@ class ClockSoundtrack {
     if (playArp) {
       const scale = [293.66, 329.63, 349.23, 440.00, 523.25, 587.33, 659.25, 783.99];
       const pattern = [0, 3, 5, 4, 2, 3, 6, 5, 1, 3, 4, 7, 5, 3, 2, 0];
-      const noteFreq = scale[pattern[this.arpStep++ % pattern.length]];
+      const noteFreq = scale[pattern[(this.arpStep++ + this.arpOffset) % pattern.length]] * this.pitchFactor;
       const pluck = this.ctx.createOscillator();
       const overtone = this.ctx.createOscillator();
       const pg = this.ctx.createGain();
@@ -304,7 +330,7 @@ class ClockSoundtrack {
       const osc = this.ctx.createOscillator();
       const g = this.ctx.createGain();
       osc.type = "sine";
-      osc.frequency.value = f;
+      osc.frequency.value = f * this.pitchFactor;
       const t0 = now + idx * 0.045; // gentle harp-like strum!
       g.gain.setValueAtTime(0.0001, t0);
       g.gain.linearRampToValueAtTime(amp / (1 + idx * 0.35), t0 + 0.025);
@@ -2654,10 +2680,18 @@ function renderFrame(p, dt) {
   const totalDur = effectiveDurationSec();
 
   if (playing) {
-    audio.updateAtmosphere(solar.daylight, intensity, true, state.minuteOfDay, isShabbat);
+    audio.updateAtmosphere(solar.daylight, intensity, true, state.minuteOfDay, isShabbat, state.dayIdx);
 
     // Musical clockwork pulse synced to real elapsed seconds (consistent tempo in 24h & 7-day modes!)
-    const totalTicks = Math.floor(p * totalDur * 3.2);
+    // Integrate the tick rate with the gradual per-day tempo factor so tempo
+    // drift never skips/doubles a beat; resync (no burst) on scrub/wrap/jump.
+    if (lastMusicP < 0 || lastTickIndex < 0 || p < lastMusicP || (p - lastMusicP) > 0.02) {
+      tickPhase = p * totalDur * 3.2;
+    } else {
+      tickPhase += (p - lastMusicP) * totalDur * 3.2 * audio.tempoFactor;
+    }
+    lastMusicP = p;
+    const totalTicks = Math.floor(tickPhase);
     if (totalTicks !== lastTickIndex) {
       lastTickIndex = totalTicks;
       const isMain = (totalTicks % 2 === 0);
@@ -2675,7 +2709,7 @@ function renderFrame(p, dt) {
       else if (viewCount <= 72 && h % 3 === 0) audio.chime("hour", intensity);
     }
   } else {
-    audio.updateAtmosphere(solar.daylight, intensity, false, state.minuteOfDay, isShabbat);
+    audio.updateAtmosphere(solar.daylight, intensity, false, state.minuteOfDay, isShabbat, state.dayIdx);
   }
 }
 
