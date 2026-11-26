@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="timelapse.css?v=49">
+<link rel="stylesheet" href="timelapse.css?v=50">
 </head>
 <body>
   <div id="stage">
@@ -25,7 +25,7 @@
             <span id="startLabel">Loading 7-day dataset…</span>
           </button>
         </div>
-        <p class="splash-hint">Best experienced with sound on · Press <kbd>Space</kbd> to play/pause · <kbd>H</kbd> to hide controls</p>
+        <p class="splash-hint">Best experienced with sound on · Press <kbd>Space</kbd> to play/pause · <kbd>T</kbd> for traffic-speed overlay · <kbd>H</kbd> to hide controls</p>
         <p class="splash-hint splash-hint-touch">Best experienced with sound on · Drag to pan · Pinch to zoom · Tap to bring controls back</p>
         <p class="splash-credit">
           © Harel Cain (הראל קין) ·
@@ -91,6 +91,8 @@
         </div>
 
         <div class="group">
+          <button id="stopsBtn" class="speed-btn stops-btn" type="button" aria-pressed="false" title="Show all 2,053 Jerusalem bus & light-rail stations (GTFS stops for the timelapse week). Names appear only when very zoomed in. (S)">📍 Stops</button>
+          <button id="speedBtn" class="speed-btn" type="button" aria-pressed="false" title="Traffic speed overlay: colour each road section by the average real speed of buses on it, computed as displacement ÷ time between GPS pings (T)">🚦 Speed</button>
           <button id="muteBtn" class="icon-btn" title="Toggle ticking soundtrack (M)" aria-label="Toggle sound">🔊</button>
           <input id="volSlider" type="range" min="0" max="1" step="0.05" value="0.75" class="vol-slider" title="Volume">
           <button id="recordBtn" class="rec-btn" title="Record one complete pass with soundtrack to WebM video">● Record Video</button>
@@ -110,6 +112,21 @@
       <a href="https://github.com/harelc/slowbus-jlm" target="_blank" rel="noopener">GitHub</a>
     </div>
 
+    <!-- Opt-in traffic-speed legend (only visible while the overlay is on) -->
+    <div id="speedLegend" class="speed-legend" hidden>
+      <div class="sl-title">REAL SPEED · ΔDISTANCE ÷ ΔTIME BETWEEN GPS PINGS</div>
+      <ul class="sl-bands">
+        <li><span style="background:#d7301f"></span>&lt;6</li>
+        <li><span style="background:#fc8d59"></span>6–12</li>
+        <li><span style="background:#f2c94c"></span>12–18</li>
+        <li><span style="background:#91cf60"></span>18–26</li>
+        <li><span style="background:#1a9850"></span>&gt;26 km/h</li>
+      </ul>
+      <div id="speedStats" class="sl-stats">measuring…</div>
+      <button id="hideBusesBtn" class="sl-toggle" type="button" aria-pressed="false" title="Remove the buses and stay with just the coloured roads (B)">🚌 Buses: shown</button>
+      <div class="sl-note">Road sections are coloured by the average real speed of buses measured on them in the last ~20 min (segments fade as they age). Buses, wakes and arrowheads stay operator-coloured. Tiers are calibrated to segment averages including stop dwell (typical urban bus pace is 12–18 km/h; even at 02:00 the median bus does ~17), so they run lower than speeds.html's instantaneous-velocity scale. Speeds are smoothed over ~2 min, so brief stop-and-go is averaged out.</div>
+    </div>
+
     <!-- Subtle map zoom controls (top-right below credit) -->
     <div id="zoomControls" class="zoom-controls" aria-label="Map zoom controls">
       <button id="zoomInBtn" type="button" title="Zoom in (+)">+</button>
@@ -118,6 +135,6 @@
     </div>
   </div>
 
-  <script src="timelapse.js?v=58"></script>
+  <script src="timelapse.js?v=59"></script>
 </body>
 </html>

@@ -74,10 +74,46 @@ Note the MCP server would not have helped this map anyway: it exposes 7 text
 tools (arrivals, ride performance, routes, stops, timetables, vehicle locations
 capped at 1,000 rows, agencies) and has no velocity-aggregation tool.
 
+## Viewport
+
+The timelapse canvas is **responsive**: its logical size follows the actual
+window (width = CSS width × 1.25, clamped 900–1920; height follows the window
+aspect), so Jerusalem always fills the screen with no letterbox bars and no
+cropping at any window shape. On resize/orientation change, all screen-space
+data (roads, GPS trajectories, stop positions, pre-rendered bases) is rebuilt
+for the new size. Consequence: WebM recordings capture at the current window
+aspect/logical size rather than a fixed 1920×1080.
+
+## Timelapse layers (`index.html`)
+
+Two opt-in overlays on the 7-day real-GPS timelapse, both off by default:
+
+- **🚦 Speed (`T`)** — road sections coloured by the average real speed of
+  buses on them. Speed per bus is recovered as displacement ÷ time between
+  GPS pings (the `real-day*.bin` trajectories pack only `t, x, y`, no SIRI
+  velocity), snapped to the nearest road segment and averaged (EMA) per
+  segment; segments stay coloured for ~20 playback minutes after a bus was
+  measured on them. Bands: <6 / 6–12 / 12–18 / 18–26 / >26 km/h —
+  deliberately lower than `speeds.html`'s scale, because they are calibrated
+  to per-segment averages including stop dwell (measured on the real data:
+  median derivative speed is ~17 km/h at 02:00, ~13 km/h at 17:00, so the old
+  >35 km/h top band was essentially motorway-only); crawling bands are drawn
+  wider, buses/wakes stay
+  operator-coloured, and the legend shows live median speed + %
+  crawling/stopped. Speed is smoothed over ~2 min, so brief stop-and-go is
+  averaged out. Inside the legend, **🚌 Buses: hidden (`B`)** removes the
+  buses/wakes/labels and stays with just the coloured roads (the speed
+  computation keeps running underneath; turning the overlay off restores
+  the buses).
+- **📍 Stops (`S`)** — all 2,053 Jerusalem bus & light-rail stations inside
+  the map bbox, frozen by `scripts/fetch_stops.py` from Stride
+  `/gtfs_stops/list` (`city=ירושלים`, 2026-11-21) into
+  `data/jlm-stops.json` (lazy-loaded on first use). Names appear at zoom ≥ 2.4×.
+
 ## Files
 
-- `index.html` — page, controls, legend, method notes
-- `app.js` — Stride fetching/pagination, vector-tile road fetch/decoder, snapping, aggregation, rendering
-- `styles.css` — layout
+- `index.html` + `timelapse.js` / `timelapse.css` — 7-day timelapse (default page)
+- `speeds.html` + `app.js` / `styles.css` — page, controls, legend, method notes; Stride fetching/pagination, vector-tile road fetch/decoder, snapping, aggregation, rendering
+- `scripts/fetch_stops.py` — freeze GTFS stop coordinates into `data/jlm-stops.json`
 
 Data: © Open Bus Stride / Hasadna (SIRI, via Israel MOT). Map: © OpenStreetMap contributors.

@@ -16,7 +16,7 @@ button, select, input, a { touch-action: manipulation; -webkit-tap-highlight-col
 
 #canvas {
   width: 100%; height: 100%;
-  object-fit: contain;
+  object-fit: fill; /* backing store already matches the window aspect (responsive viewport) */
   display: block;
   touch-action: none;
 }
@@ -255,6 +255,46 @@ kbd {
   box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.55);
 }
 .vol-slider { width: 68px; accent-color: #f59e0b; cursor: pointer; }
+.speed-btn {
+  font: 600 0.78rem "JetBrains Mono", monospace; color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px; padding: 0.4rem 0.65rem; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.speed-btn:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.speed-btn.active {
+  background: rgba(215, 48, 31, 0.28); border-color: rgba(252, 141, 89, 0.65); color: #fecaca;
+  box-shadow: inset 0 0 0 1px rgba(252, 141, 89, 0.35);
+}
+.stops-btn.active {
+  background: rgba(245, 158, 11, 0.26); border-color: rgba(251, 191, 36, 0.6); color: #fde68a;
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.32);
+}
+
+/* Traffic-speed legend (top-right, under the zoom controls — clear of the
+   top-left title hero and the bottom-left bus-count panel at every scale) */
+.speed-legend {
+  position: absolute; top: 138px; right: 18px; z-index: 18;
+  width: min(340px, calc(100vw - 36px)); padding: 10px 12px; border-radius: 12px;
+  background: rgba(9, 15, 29, 0.72); border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px); color: #e2e8f0;
+  transition: opacity 0.3s ease;
+}
+.speed-legend[hidden] { display: none; }
+.speed-legend.hidden-ui { opacity: 0; pointer-events: none; }
+.sl-title { font: 600 0.62rem "JetBrains Mono", monospace; letter-spacing: 0.08em; color: #fca5a5; margin-bottom: 7px; }
+.sl-bands { display: flex; flex-wrap: wrap; gap: 4px 10px; list-style: none; margin: 0 0 7px; padding: 0; font: 500 0.7rem "JetBrains Mono", monospace; }
+.sl-bands span { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.sl-stats { font: 600 0.74rem "JetBrains Mono", monospace; color: #fde68a; margin-bottom: 5px; }
+.sl-toggle {
+  font: 600 0.7rem "JetBrains Mono", monospace; color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px; padding: 4px 8px; margin-bottom: 6px; cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.sl-toggle:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.sl-toggle.active { background: rgba(56, 189, 248, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #bae6fd; }
+.sl-note { font-size: 0.68rem; line-height: 1.45; color: #94a3b8; }
 .rec-btn {
   background: rgba(220, 38, 38, 0.22); border-color: rgba(248, 113, 113, 0.45);
   color: #fecaca; font-weight: 600;
@@ -397,10 +437,6 @@ kbd {
   .splash-hint-touch { display: block; }
 }
 
-@media (orientation: portrait) and (max-width: 900px) {
-  #canvas { object-fit: cover; }
-}
-
 @media (max-width: 820px) {
   .overlay { padding: 12px; }
   .splash-card {
@@ -460,6 +496,13 @@ kbd {
   .lp-mini-btn, .lp-close-btn { min-height: 48px; padding: 6px 12px; }
   .lp-chip { padding: 6px 10px; }
   .lp-chip button { padding: 4px 6px; font-size: 1rem; }
+}
+
+@media (max-width: 820px) {
+  .speed-legend { top: calc(96px + env(safe-area-inset-top)); bottom: auto; left: 8px; right: 8px; width: auto; }
+  .speed-btn { min-height: 44px; }
+  #stopsBtn { order: 4; }
+  #speedBtn { order: 4; }
 }
 
 @media (max-width: 820px) and (max-height: 500px) {

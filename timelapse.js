@@ -7,7 +7,17 @@
 // ticking-clock soundtrack, and 1080p WebM video recording.
 // ============================================================================
 
-const W = 1920, H = 1080;
+// Responsive logical viewport (decided 2026-11-26): the canvas backing store
+// follows the real window aspect instead of a fixed letterboxed 1920x1080
+// stage. Logical width scales with CSS width (floor 900 so phones stay
+// readable, cap 1920 = the original design width); height follows aspect.
+// Everything drawn in screen coords is rebuilt by applyViewport() on resize.
+let W = 1920, H = 1080;
+function targetLogicalSize() {
+  const cssW = window.innerWidth || 1920, cssH = window.innerHeight || 1080;
+  const w = clamp(Math.round(cssW * 1.25), 900, 1920);
+  return [w, Math.max(480, Math.round(w * cssH / cssW))];
+}
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { alpha: false });
 const $ = (id) => document.getElementById(id);
@@ -24,6 +34,280 @@ let viewCount = 0;
 let segGlow = null;     // Float32Array: warm street-light persistence per segment
 let segDensity = null;  // Float32Array: current real bus count per segment
 let segSpeed = null;    // Float32Array: real bus speed per segment (used ONLY for driving velocity!)
+
+// --- Opt-in traffic-speed overlay -------------------------------------------
+// The real-day*.bin trajectories pack only (t, x, y) per GPS ping — no SIRI
+// velocity field — so speed is recovered as displacement / time between pings.
+let speedOverlay = false;
+let hideBuses = false; // speeds-only view: vehicles hidden, coloured roads stay
+let metersPerPxX = 12, metersPerPxY = 12; // set from the real bbox in computeMapProjection()
+let speedStats = null;                    // { n, median, pctSlow, pctCrawl } for the legend
+let lastLegendMs = 0;
+// Recalibrated 2026-11-26 for THIS metric (per-segment average of derivative
+// speeds, dwell included) — NOT speeds.html's bands, which use SIRI's
+// instantaneous reported velocity and run systematically higher. Measured on
+// real-day4.bin (Thu): 02:00 median 17 km/h / p75 25; 17:00 median 13 / p75 19.
+// Under the old >35 top band even free-flowing night arterials never turned
+// green. These tiers keep all five bands populated in every period:
+// <6 crawling, 6-12 slow, 12-18 typical urban bus pace, 18-26 flowing, >26 fast.
+const SPEED_BANDS = [
+  { max: 6,        color: "#d7301f", rgb: [215, 48, 31] },
+  { max: 12,       color: "#fc8d59", rgb: [252, 141, 89] },
+  { max: 18,       color: "#f2c94c", rgb: [242, 201, 76] },
+  { max: 26,       color: "#91cf60", rgb: [145, 207, 96] },
+  { max: Infinity, color: "#1a9850", rgb: [26, 152, 80] },
+];
+// Road-section speed aggregation: each active bus's derivative speed is
+// snapped to its nearest roads[] segment; segments keep an EMA of the speeds
+// measured on them and are drawn in band colour while fresh (<=20 playback
+// minutes old), so corridors fill in as buses traverse them.
+let roadGrid = null;        // Map<cellKey, segIdx[]> spatial index over roads[]
+let segRoadSpeed = null;    // Float32Array EMA km/h per road segment
+let segRoadMin = null;      // Float32Array absolute week-minute of last measurement per segment
+let frameSpeedSum = null;   // per-frame accumulators (reset each frame)
+let frameSpeedN = null;
+const ROAD_CELL = 48, ROAD_SNAP_PX = 26, ROAD_FRESH_MIN = 20;
+
+function buildRoadSpeedIndex() {
+  roadGrid = new Map();
+  segRoadSpeed = new Float32Array(roads.length);
+  segRoadMin = new Float32Array(roads.length).fill(-1e9);
+  frameSpeedSum = new Float32Array(roads.length);
+  frameSpeedN = new Uint16Array(roads.length);
+  const key = (x, y) => `${Math.floor(x / ROAD_CELL)},${Math.floor(y / ROAD_CELL)}`;
+  roads.forEach((r, idx) => {
+    for (const [x, y] of [[r.x1, r.y1], [(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2], [r.x2, r.y2]]) {
+      const k = key(x, y);
+      if (!roadGrid.has(k)) roadGrid.set(k, []);
+      roadGrid.get(k).push(idx);
+    }
+  });
+}
+
+function buildRoadsFromData() {
+  const raw = DATA.roads;
+  roads = new Array(raw.length / 5);
+  for (let i = 0, j = 0; i < raw.length; i += 5, j++) {
+    const x1 = toScreenX(raw[i + 1]), y1 = toScreenY(raw[i + 2]);
+    const x2 = toScreenX(raw[i + 3]), y2 = toScreenY(raw[i + 4]);
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+    roads[j] = { tier: raw[i], x1, y1, x2, y2, len, dx: (x2 - x1) / len, dy: (y2 - y1) / len };
+  }
+}
+
+// (Re)size the logical viewport to the window and rebuild everything that
+// lives in screen coordinates. Returns true if the size actually changed.
+function applyViewport(force = false) {
+  const [w, h] = targetLogicalSize();
+  if (!force && w === W && h === H && canvas.width === W) return false;
+  W = w; H = h;
+  canvas.width = W; canvas.height = H;
+  if (!DATA) return true;
+  computeMapProjection();
+  buildRoadsFromData();
+  buildRoadGraph();
+  buildRoadSpeedIndex(); // also resets the per-segment speed EMA
+  prerenderRoadBases();
+  // Invalidate every screen-space cache; they reload/rebuild lazily
+  realDays.fill(null); realDayPromises.fill(null);
+  lineTripsCache.clear(); loadingLineKeys.clear();
+  if (lightRailData) {
+    for (const pat of lightRailData.patterns) {
+      pat.screenStops = pat.stops.map(([f, nx, ny]) => [f, toScreenX(nx), toScreenY(ny)]);
+      pat.flatCoords = [];
+      for (const [, sx, sy] of pat.screenStops) pat.flatCoords.push(sx, sy);
+    }
+  }
+  stopsData = null; stopsPromise = null;
+  if (stopsOverlay) loadStops();
+  resetSimulation();
+  resetCamera();
+  for (const key of selectedLineKeys) {
+    const [num, opStr] = key.split(":");
+    const meta = LINE_CATALOG.find((m) => m.line === num && m.opRef === +opStr);
+    if (meta) ensureLineLoaded(meta);
+  }
+  return true;
+}
+
+function nearestRoadSeg(x, y) {
+  const gx = Math.floor(x / ROAD_CELL), gy = Math.floor(y / ROAD_CELL);
+  let best = -1, bestD = ROAD_SNAP_PX;
+  for (let cx = gx - 1; cx <= gx + 1; cx++) for (let cy = gy - 1; cy <= gy + 1; cy++) {
+    const bucket = roadGrid.get(`${cx},${cy}`);
+    if (!bucket) continue;
+    for (const idx of bucket) {
+      const r = roads[idx];
+      const dx = r.x2 - r.x1, dy = r.y2 - r.y1, l2 = dx * dx + dy * dy;
+      const t = l2 ? clamp(((x - r.x1) * dx + (y - r.y1) * dy) / l2, 0, 1) : 0;
+      const d = Math.hypot(x - (r.x1 + t * dx), y - (r.y1 + t * dy));
+      if (d < bestD) { bestD = d; best = idx; }
+    }
+  }
+  return best;
+}
+
+// Called by the bus drawing loops for every active bus (overlay on only)
+const dirtySegs = [];
+function accumulateRoadSpeed(x, y, kmh, absWeekMin) {
+  const idx = nearestRoadSeg(x, y);
+  if (idx < 0) return;
+  if (!frameSpeedN[idx]) dirtySegs.push(idx);
+  frameSpeedSum[idx] += kmh; frameSpeedN[idx]++;
+  frameSpeedMin = absWeekMin;
+}
+let frameSpeedMin = 0;
+
+// Fold this frame's per-segment samples into the EMA, then reset accumulators
+function commitRoadSpeedFrame() {
+  if (!frameSpeedN) return;
+  for (const i of dirtySegs) {
+    const avg = frameSpeedSum[i] / frameSpeedN[i];
+    segRoadSpeed[i] = segRoadMin[i] < -1e8 ? avg : lerp(segRoadSpeed[i], avg, 0.35);
+    segRoadMin[i] = frameSpeedMin;
+    frameSpeedSum[i] = 0; frameSpeedN[i] = 0;
+  }
+  dirtySegs.length = 0;
+}
+
+function drawRoadSpeedOverlay(solar, absWeekMin) {
+  if (!speedOverlay || !segRoadSpeed) return;
+  const { daylight } = solar;
+  const isNight = daylight < 0.55;
+  const ms = camMarkerScale();
+  const invZ = 1 / cam.zoom;
+  const vx0 = -cam.x * invZ - 30, vy0 = -cam.y * invZ - 30;
+  const vx1 = (W - cam.x) * invZ + 30, vy1 = (H - cam.y) * invZ + 30;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
+  const bandWidths = [4.4, 3.8, 3.2, 3.0, 3.0];
+  // Single pass over segments -> per-band index lists, then <=5 stroke calls
+  const byBand = [[], [], [], [], []];
+  for (let i = 0; i < roads.length; i++) {
+    const age = absWeekMin - segRoadMin[i];
+    if (age < 0 || age > ROAD_FRESH_MIN) continue;
+    const r = roads[i];
+    if ((r.x1 < vx0 && r.x2 < vx0) || (r.x1 > vx1 && r.x2 > vx1) ||
+        (r.y1 < vy0 && r.y2 < vy0) || (r.y1 > vy1 && r.y2 > vy1)) continue;
+    byBand[speedBandIdx(segRoadSpeed[i])].push(i);
+  }
+  for (let b = 0; b < SPEED_BANDS.length; b++) {
+    if (!byBand[b].length) continue;
+    ctx.beginPath();
+    for (const i of byBand[b]) {
+      const r = roads[i];
+      ctx.moveTo(r.x1, r.y1);
+      ctx.lineTo(r.x2, r.y2);
+    }
+    ctx.strokeStyle = rgbStr(SPEED_BANDS[b].rgb, isNight ? 0.88 : 0.80);
+    ctx.lineWidth = bandWidths[b] * ms;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// --- Opt-in all-stations layer ----------------------------------------------
+// Coordinates were NOT in the repo for bus stops (only unnamed light-rail
+// pattern stops in jlm-lightrail.json); scripts/fetch_stops.py froze all
+// 2,053 GTFS stops inside the bbox from Stride /gtfs_stops/list
+// (city=ירושלים, 2026-11-21) into data/jlm-stops.json. Lazy-loaded on
+// first use so the default experience pays nothing for it.
+let stopsOverlay = false;
+let stopsData = null;    // [{ x, y, name, code }] in screen coords
+let stopsPromise = null;
+
+function loadStops() {
+  if (stopsData) return Promise.resolve(stopsData);
+  if (stopsPromise) return stopsPromise;
+  stopsPromise = fetch("data/jlm-stops.json?v=1")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((rows) => {
+      if (!rows) return null;
+      stopsData = rows.map((s) => ({ x: toScreenX(s.x), y: toScreenY(s.y), name: s.n, code: s.c }));
+      if (stopsOverlay && !playing && DATA) renderFrame(progress, 0.016);
+      return stopsData;
+    })
+    .catch((err) => { console.warn("Stops load failed:", err); stopsPromise = null; return null; });
+  return stopsPromise;
+}
+
+function drawStops(solar) {
+  if (!stopsOverlay) return;
+  if (!stopsData) { loadStops(); return; }
+  const { daylight } = solar;
+  const isNight = daylight < 0.55;
+  const ms = camMarkerScale();
+  const invZ = 1 / cam.zoom;
+  const vx0 = -cam.x * invZ - 20, vy0 = -cam.y * invZ - 20;
+  const vx1 = (W - cam.x) * invZ + 20, vy1 = (H - cam.y) * invZ + 20;
+
+  ctx.save();
+  // Batched dots: soft halo pass + crisp core pass (2 fill calls for ~2k stops)
+  const halo = mixRGB([251, 191, 36], [180, 110, 20], daylight);
+  ctx.beginPath();
+  for (const s of stopsData) {
+    if (s.x < vx0 || s.x > vx1 || s.y < vy0 || s.y > vy1) continue;
+    ctx.moveTo(s.x + 3.4 * ms, s.y);
+    ctx.arc(s.x, s.y, 3.4 * ms, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = rgbStr(halo, isNight ? 0.20 : 0.16);
+  ctx.fill();
+  ctx.beginPath();
+  for (const s of stopsData) {
+    if (s.x < vx0 || s.x > vx1 || s.y < vy0 || s.y > vy1) continue;
+    ctx.moveTo(s.x + 1.6 * ms, s.y);
+    ctx.arc(s.x, s.y, 1.6 * ms, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = rgbStr(halo, isNight ? 0.92 : 0.85);
+  ctx.fill();
+
+  // Station names only when VERY zoomed in: small font, wrapped to <=2 lines,
+  // one label per screen cell to avoid pile-up
+  if (cam.zoom >= 4) {
+    const s = 1 / Math.pow(cam.zoom, 0.72);
+    const fontPx = 8.5 * s, lineH = 9.5 * s, maxW = 62 * s;
+    const txt = mixRGB([226, 232, 240], [58, 50, 42], smoothstep(0.45, 0.72, daylight));
+    ctx.font = `500 ${fontPx.toFixed(2)}px "JetBrains Mono", monospace`;
+    ctx.fillStyle = rgbStr(txt, 0.92);
+    const cellW = 120 * s, cellH = 26 * s, seen = new Set();
+    for (const st of stopsData) {
+      if (!st.name || st.x < vx0 || st.x > vx1 || st.y < vy0 || st.y > vy1) continue;
+      const key = `${Math.floor(st.x / cellW)},${Math.floor(st.y / cellH)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Greedy word wrap (names are "StreetA/StreetB" — break on / first)
+      const words = st.name.replace(/\//g, "/ ").split(/\s+/).filter(Boolean);
+      const lines = [];
+      let line = "";
+      for (const w of words) {
+        const trial = line ? `${line} ${w}` : w;
+        if (line && ctx.measureText(trial).width > maxW) {
+          lines.push(line);
+          line = w;
+          if (lines.length === 2) break;
+        } else line = trial;
+      }
+      if (line && lines.length < 2) lines.push(line);
+      for (let li = 0; li < lines.length; li++) {
+        ctx.fillText(lines[li], st.x + 5 * ms, st.y - 4 * ms + li * lineH);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function speedBandIdx(kmh) {
+  for (let i = 0; i < SPEED_BANDS.length; i++) if (kmh < SPEED_BANDS[i].max) return i;
+  return SPEED_BANDS.length - 1;
+}
+function summarizeSpeeds(vals) {
+  if (!vals.length) return null;
+  const s = [...vals].sort((a, b) => a - b);
+  let slow = 0, crawl = 0;
+  for (const v of s) { if (v < 12) slow++; if (v < 6) crawl++; }
+  return { n: s.length, median: s[s.length >> 1], pctSlow: 100 * slow / s.length, pctCrawl: 100 * crawl / s.length };
+}
 
 let bgNight = null;     // offscreen 1920x1080 night road web
 let bgDay = null;       // offscreen 1920x1080 day road web
@@ -355,15 +639,21 @@ function computeMapProjection() {
   const geoH = (latMax - latMin);
   const geoAspect = geoW / geoH;
 
-  // Keep full north-south Jerusalem span visible (Pisgat Ze'ev down to Har Homa)
-  const availH = H * 1.03;
-  const availW = availH * geoAspect;
+  // Keep full north-south Jerusalem span visible (Pisgat Ze'ev down to Har Homa);
+  // on narrow/portrait viewports fit by width instead so nothing is cropped.
+  let availH = H * 1.03;
+  let availW = availH * geoAspect;
+  if (availW > W * 1.02) { availW = W * 1.02; availH = availW / geoAspect; }
   mapRect = {
     x: Math.round((W - availW) * 0.59),
     y: Math.round((H - availH) * 0.22),
     w: Math.round(availW),
     h: Math.round(availH),
   };
+  // True ground scale of one canvas pixel (for Δdisplacement → km/h)
+  const latMidRad = ((latMin + latMax) / 2) * Math.PI / 180;
+  metersPerPxX = ((lonMax - lonMin) * 111320 * Math.cos(latMidRad)) / mapRect.w;
+  metersPerPxY = ((latMax - latMin) * 110540) / mapRect.h;
 }
 
 function toScreenX(nx) { return mapRect.x + (nx / 10000) * mapRect.w; }
@@ -965,24 +1255,14 @@ function updateBusFleet(targetBuses, dt, isShabbat = false) {
 const cam = { zoom: 1, x: 0, y: 0, minZoom: 1, maxZoom: 6 };
 let camCanPan = false; // true when zoomed, or when cover-fit crops the canvas (portrait phones)
 
-// Cached object-fit ("contain" desktop / "cover" portrait phones, set in CSS).
-// Invalidated on resize so pointermove does not pay for getComputedStyle per event.
-let canvasFitCache = "contain";
-function refreshCanvasFit() {
-  canvasFitCache = getComputedStyle(canvas).objectFit || "contain";
-}
-refreshCanvasFit();
+// The canvas now always fills the window (responsive logical size, CSS
+// object-fit: fill), so the visible canvas rect is simply the full frame.
+let canvasFitCache = "fill";
+function refreshCanvasFit() { canvasFitCache = "fill"; }
 
-// Canvas-coordinate rectangle actually visible on screen under the current fit.
+// Canvas-coordinate rectangle actually visible on screen.
 function visibleCanvasRect() {
-  const rect = canvas.getBoundingClientRect();
-  if (!rect.width || !rect.height) return { x: 0, y: 0, w: W, h: H };
-  const scale = canvasFitCache === "cover"
-    ? Math.max(rect.width / W, rect.height / H)
-    : Math.min(rect.width / W, rect.height / H);
-  const w = Math.min(W, rect.width / scale);
-  const h = Math.min(H, rect.height / scale);
-  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+  return { x: 0, y: 0, w: W, h: H };
 }
 
 function camMarkerScale() {
@@ -1030,45 +1310,35 @@ function zoomAtCanvasPoint(factor, cx, cy) {
 
 function resetCamera() {
   cam.zoom = 1;
-  if (canvasFitCache === "cover" && DATA) {
-    // Centre Jerusalem in the visible (cropped) rect instead of the full frame
-    const v = visibleCanvasRect();
-    cam.x = v.x + v.w / 2 - (mapRect.x + mapRect.w / 2);
-    cam.y = v.y + v.h / 2 - (mapRect.y + mapRect.h / 2);
-  } else {
-    cam.x = 0; cam.y = 0;
-  }
+  cam.x = 0; cam.y = 0; // mapRect is already centred in the responsive frame
   clampCamera();
   camHomePos = { x: cam.x, y: cam.y };
   if (!playing && DATA && viewCount > 0) renderFrame(progress, 0.016);
 }
 
-// Rotation / resize / URL-bar show-hide: refit, then re-home at 1x or re-clamp when zoomed
+// Rotation / resize: rebuild the responsive viewport (debounced; small
+// height-only jitter from mobile URL bars is ignored by the size delta check)
 let viewportTimer = null;
 function onViewportChange() {
   clearTimeout(viewportTimer);
   viewportTimer = setTimeout(() => {
-    refreshCanvasFit();
-    if (!DATA) return;
-    if (cam.zoom <= 1.02) resetCamera();
-    else { clampCamera(); if (!playing) renderFrame(progress, 0.016); }
-  }, 120);
+    if (!DATA) { applyViewport(); return; }
+    const [w, h] = targetLogicalSize();
+    if (Math.abs(w - W) < 8 && Math.abs(h - H) < 24) return;
+    const wasZoomed = cam.zoom > 1.02;
+    applyViewport(true);
+    if (wasZoomed) { clampCamera(); if (!playing) renderFrame(progress, 0.016); }
+  }, 180);
 }
 window.addEventListener("resize", onViewportChange);
 window.addEventListener("orientationchange", onViewportChange);
 
 function clientToCanvasXY(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  // Account for object-fit letterboxing (contain) or cropping (cover)
-  const scale = canvasFitCache === "cover"
-    ? Math.max(rect.width / W, rect.height / H)
-    : Math.min(rect.width / W, rect.height / H);
-  const drawW = W * scale, drawH = H * scale;
-  const offX = rect.left + (rect.width - drawW) * 0.5;
-  const offY = rect.top + (rect.height - drawH) * 0.5;
+  if (!rect.width || !rect.height) return [0, 0];
   return [
-    ((clientX - offX) / drawW) * W,
-    ((clientY - offY) / drawH) * H,
+    ((clientX - rect.left) / rect.width) * W,
+    ((clientY - rect.top) / rect.height) * H,
   ];
 }
 
@@ -1416,8 +1686,14 @@ function drawHUD(state, solar) {
   // Anchor HUD to the *visible* canvas rect: under portrait cover-fit the
   // frame corners are cropped off-screen, so corner-anchored HUD would vanish.
   const vis = visibleCanvasRect();
-  const compactHUD = vis.w < 900;
-  const hudBottomInset = compactHUD ? 258 : 48; // clear the mobile bottom-sheet controls
+  const compactHUD = window.innerWidth < 700; // CSS pixels, not logical canvas units
+  // Keep the bottom-left histogram panel clear of the DOM control bar: reserve
+  // its measured height (converted CSS -> logical px) unless the user manually
+  // hid the controls with H, in which case the panel reclaims the corner.
+  const ctlEl = $("controls");
+  const hudBottomInset = compactHUD ? 258
+    : controlsHidden ? 48
+    : Math.round(((ctlEl ? ctlEl.offsetHeight : 86) + 34) * (W / Math.max(1, window.innerWidth)));
 
   // --- TOP-LEFT: Editorial Title + Oversized Clock + Celestial Dial ---
   const x0 = vis.x + (compactHUD ? 26 : 56), y0 = vis.y + (compactHUD ? 42 : 54);
@@ -1958,6 +2234,31 @@ function interpolateTrip(pts, m) {
   return [x, y, i0, ux, uy];
 }
 
+// Real speed (km/h) of a trip at minute `m`: derivative of displacement.
+// Primary: smoothed displacement over the preceding 2 minutes of the
+// interpolated trajectory. Fallback: the raw ping pair straddling `m`.
+// Returns null when neither is trustworthy (long GPS gap / trip start).
+function tripSpeedKmh(pts, m, pos) {
+  const [hx, hy, i0] = pos;
+  if (m - 2 >= pts[0]) {
+    const back = interpolateTrip(pts, m - 2);
+    if (back) {
+      const metres = Math.hypot((hx - back[0]) * metersPerPxX, (hy - back[1]) * metersPerPxY);
+      const kmh = metres / 120 * 3.6; // 2 minutes = 120 s
+      if (kmh <= 110) return kmh;
+    }
+  }
+  if (i0 + 3 < pts.length) {
+    const dtMin = pts[i0 + 3] - pts[i0];
+    if (dtMin > 0.05 && dtMin <= 5.5) {
+      const metres = Math.hypot((pts[i0 + 4] - pts[i0 + 1]) * metersPerPxX, (pts[i0 + 5] - pts[i0 + 2]) * metersPerPxY);
+      const kmh = metres / (dtMin * 60) * 3.6;
+      if (kmh <= 110) return kmh;
+    }
+  }
+  return null;
+}
+
 // Trim a flat polyline [x0,y0, ..., hx,hy] to at most `maxLen` pixels back from its head,
 // interpolating the exact cut point so the tail glides smoothly with zero snapping!
 function trimPolylineFromHead(coords, maxLen) {
@@ -2010,6 +2311,7 @@ function traceSmoothPolyline(coords, maxJumpSq = 2500) {
 function drawSelectedLinesMode(weekMin, solar) {
   const { daylight } = solar;
   const isNight = daylight < 0.55;
+  const lineSpeedVals = [];
   const prevM = lastLineMinute;
   const steppedForward = prevM >= 0 && weekMin > prevM && (weekMin - prevM) < 60;
   lastLineMinute = weekMin;
@@ -2030,7 +2332,7 @@ function drawSelectedLinesMode(weekMin, solar) {
 
     // 1) Ultra-subtle route corridor guide that fades away when no buses are on the line (e.g. deep night / Shabbat)
     const activeNowOnLine = ld.trips.some((tr) => weekMin >= tr.t0 - 10 && weekMin <= tr.t1 + 10);
-    if (activeNowOnLine) {
+    if (!hideBuses && activeNowOnLine) {
       ctx.globalCompositeOperation = isNight ? "lighter" : "source-over";
       ctx.beginPath();
       const step = Math.max(1, Math.floor(ld.trips.length / 8));
@@ -2080,6 +2382,10 @@ function drawSelectedLinesMode(weekMin, solar) {
       const [hx, hy, i0, ux, uy] = pos;
       activePositions.push([hx, hy, ux, uy]);
       activeCount++;
+      if (speedOverlay) {
+        const kmh = tripSpeedKmh(tr.pts, weekMin, pos);
+        if (kmh !== null) { lineSpeedVals.push(kmh); accumulateRoadSpeed(hx, hy, kmh, weekMin); }
+      }
 
       // Adaptive trail length: hugs city streets tightly, shrinks to a sleek short slipstream
       // on fast highway spans where 1-min GPS pings are >1 km apart (no off-road straight chords!)
@@ -2108,7 +2414,7 @@ function drawSelectedLinesMode(weekMin, solar) {
       tCoords.push(hx, hy);
       tCoords = trimPolylineFromHead(tCoords, maxTrailPx);
 
-      if (tCoords.length >= 4) {
+      if (!hideBuses && tCoords.length >= 4) {
         const tx = tCoords[0], ty = tCoords[1];
         const spanSq = (hx - tx) * (hx - tx) + (hy - ty) * (hy - ty);
         ctx.beginPath();
@@ -2127,34 +2433,37 @@ function drawSelectedLinesMode(weekMin, solar) {
       }
     }
 
-    // Halo + crisp directional arrowhead for each active bus (scales gently with zoom!)
-    const rHalo = (isNight ? 7.2 : 6.4) * ms;
-    ctx.beginPath();
-    for (const [hx, hy] of activePositions) {
-      ctx.moveTo(hx + rHalo, hy);
-      ctx.arc(hx, hy, rHalo, 0, Math.PI * 2);
-    }
-    ctx.fillStyle = rgbStr(col, isNight ? 0.40 : 0.32);
-    ctx.fill();
+    if (!hideBuses) {
+      // Halo + crisp directional arrowhead for each active bus (scales gently with zoom!)
+      const rHalo = (isNight ? 7.2 : 6.4) * ms;
+      ctx.beginPath();
+      for (const [hx, hy] of activePositions) {
+        ctx.moveTo(hx + rHalo, hy);
+        ctx.arc(hx, hy, rHalo, 0, Math.PI * 2);
+      }
+      ctx.fillStyle = rgbStr(col, isNight ? 0.40 : 0.32);
+      ctx.fill();
 
-    ctx.beginPath();
-    for (const [hx, hy, ux, uy] of activePositions) {
-      traceArrowHead(hx, hy, ux, uy, 7.2 * ms, 4.4 * ms, 4.0 * ms, 2.0 * ms);
-    }
-    ctx.fillStyle = rgbStr(col, 0.98);
-    ctx.fill();
+      ctx.beginPath();
+      for (const [hx, hy, ux, uy] of activePositions) {
+        traceArrowHead(hx, hy, ux, uy, 7.2 * ms, 4.4 * ms, 4.0 * ms, 2.0 * ms);
+      }
+      ctx.fillStyle = rgbStr(col, 0.98);
+      ctx.fill();
 
-    // Crisp operator-colored bus number right next to each bus!
-    ctx.globalCompositeOperation = "source-over";
-    const spr = getLabelSprite(ld.line, ld.colorIdx, isNight);
-    const sw = spr.width * ms, sh = spr.height * ms;
-    for (const [hx, hy] of activePositions) {
-      ctx.drawImage(spr, hx + 6 * ms, hy - 8 * ms, sw, sh);
+      // Crisp operator-colored bus number right next to each bus!
+      ctx.globalCompositeOperation = "source-over";
+      const spr = getLabelSprite(ld.line, ld.colorIdx, isNight);
+      const sw = spr.width * ms, sh = spr.height * ms;
+      for (const [hx, hy] of activePositions) {
+        ctx.drawImage(spr, hx + 6 * ms, hy - 8 * ms, sw, sh);
+      }
     }
   }
 
   ctx.restore();
 
+  if (speedOverlay) { speedStats = summarizeSpeeds(lineSpeedVals); commitRoadSpeedFrame(); }
   let maxB = 1;
   for (let b = 0; b < combinedCurve.length; b++) if (combinedCurve[b] > maxB) maxB = combinedCurve[b];
   return { activeCount, curve: combinedCurve, maxB };
@@ -2414,6 +2723,7 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
 
   // Batch all active real buses into 6 operator color groups for 60 FPS!
   const trailPaths = [[], [], [], [], [], []]; // array of flat [x0,y0, x1,y1, ...] smooth polylines per operator
+  const speedVals = [];                        // instantaneous km/h per active bus (overlay on)
   const heads = [[], [], [], [], [], []];      // [hx, hy, line] per operator
   const ms = camMarkerScale();
   let activeCount = 0;
@@ -2479,8 +2789,19 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
       ? Math.hypot(tr.pts[i0 + 4] - tr.pts[i0 + 1], tr.pts[i0 + 5] - tr.pts[i0 + 2])
       : 0;
     const maxTrailPx = (segDist > 30 ? clamp(44 - (segDist - 30) * 0.55, 14, 44) : 44) * ms;
-    if (tCoords.length >= 4) trailPaths[tr.colorIdx].push(trimPolylineFromHead(tCoords, maxTrailPx));
+    if (speedOverlay) {
+      const kmh = tripSpeedKmh(tr.pts, minuteOfDay, pos);
+      if (kmh !== null) {
+        speedVals.push(kmh);
+        accumulateRoadSpeed(hx, hy, kmh, dayIdx * 1440 + minuteOfDay);
+      }
+    }
+    if (tCoords.length >= 4) {
+      trailPaths[tr.colorIdx].push(trimPolylineFromHead(tCoords, maxTrailPx));
+    }
   }
+  if (speedOverlay) { speedStats = summarizeSpeeds(speedVals); commitRoadSpeedFrame(); }
+  if (hideBuses) return { activeCount, loading: false }; // speeds computed above; skip all vehicle drawing
 
   ctx.save();
   ctx.lineCap = "round";
@@ -2499,7 +2820,6 @@ function drawRealAllBuses(dayIdx, minuteOfDay, solar) {
     ctx.strokeStyle = rgbStr(cols[g], isNight ? 0.42 : 0.36);
     ctx.stroke();
   }
-
   // 2) Batched halos (6 fills total!)
   const rHalo = (isNight ? 5.6 : 4.8) * ms;
   for (let g = 0; g < 6; g++) {
@@ -2632,7 +2952,9 @@ function renderFrame(p, dt) {
     ctx.translate(cam.x, cam.y);
     ctx.scale(cam.zoom, cam.zoom);
     drawRoadBase(solar);
-    drawStationEvents(solar);
+    drawRoadSpeedOverlay(solar, weekMin);
+    drawStops(solar);
+    if (!hideBuses) drawStationEvents(solar);
     const res = drawSelectedLinesMode(weekMin, solar);
     drawLandmarks(solar);
     ctx.restore();
@@ -2660,10 +2982,12 @@ function renderFrame(p, dt) {
     ctx.translate(cam.x, cam.y);
     ctx.scale(cam.zoom, cam.zoom);
     drawRoadBase(solar);
-    drawWarmStreetGlow(solar);
-    drawStationEvents(solar);
+    if (!hideBuses) drawWarmStreetGlow(solar); // density glow would muddy the speed colours
+    drawRoadSpeedOverlay(solar, state.dayIdx * 1440 + state.minuteOfDay);
+    drawStops(solar);
+    if (!hideBuses) drawStationEvents(solar);
     const realRes = drawRealAllBuses(state.dayIdx, state.minuteOfDay, solar);
-    const railCount = drawLightRail(state.dayIdx, state.minuteOfDay, solar);
+    const railCount = hideBuses ? 0 : drawLightRail(state.dayIdx, state.minuteOfDay, solar);
     if (realRes.activeCount !== null) {
       state.buses = realRes.activeCount + railCount;
       intensity = clamp(state.buses / 850, 0, 1);
@@ -2674,6 +2998,7 @@ function renderFrame(p, dt) {
     drawHUD(state, solar);
   }
 
+  updateSpeedLegend();
   highlightActiveDayMarker(state.dayIdx);
 
   const isShabbat = (state.dayIdx === 5 && state.minuteOfDay >= 960) || (state.dayIdx === 6 && state.minuteOfDay < 1065);
@@ -2809,6 +3134,7 @@ function setControlsHidden(hidden) {
   controlsHidden = !!hidden;
   $("controls").classList.toggle("force-hidden", controlsHidden);
   $("creditCorner").classList.toggle("hidden-ui", controlsHidden);
+  $("speedLegend").classList.toggle("hidden-ui", controlsHidden);
   $("zoomControls").classList.toggle("hidden-ui", controlsHidden);
   $("showControlsBtn").hidden = !controlsHidden;
   if (controlsHidden) {
@@ -2838,6 +3164,9 @@ document.addEventListener("keydown", (e) => {
   if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if (e.key.toLowerCase() === "m") { toggleMute(); }
+  else if (e.key.toLowerCase() === "t") { setSpeedOverlay(!speedOverlay); }
+  else if (e.key.toLowerCase() === "s") { setStopsOverlay(!stopsOverlay); }
+  else if (e.key.toLowerCase() === "b") { setHideBuses(!hideBuses); }
   else if (e.key.toLowerCase() === "f") { toggleFullscreen(); }
   else if (e.key.toLowerCase() === "h") { setControlsHidden(!controlsHidden); }
   else if (e.key === "+" || e.key === "=") { zoomAtCanvasPoint(1.35, W * 0.5, H * 0.5); }
@@ -2851,6 +3180,47 @@ function togglePlay() {
   playing = !playing;
   $("playBtn").textContent = playing ? "⏸" : "▶";
   wakeControls();
+}
+
+function setStopsOverlay(on) {
+  stopsOverlay = on;
+  $("stopsBtn").classList.toggle("active", on);
+  $("stopsBtn").setAttribute("aria-pressed", String(on));
+  if (on) loadStops();
+  wakeControls();
+  if (!playing && DATA) renderFrame(progress, 0.016);
+}
+
+function setHideBuses(on) {
+  hideBuses = on;
+  const btn = $("hideBusesBtn");
+  btn.classList.toggle("active", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.textContent = on ? "🚌 Buses: hidden (speeds only)" : "🚌 Buses: shown";
+  if (on && !speedOverlay) setSpeedOverlay(true); // "stay with the speeds"
+  wakeControls();
+  if (!playing && DATA) renderFrame(progress, 0.016);
+}
+
+function setSpeedOverlay(on) {
+  speedOverlay = on;
+  speedStats = null;
+  $("speedBtn").classList.toggle("active", on);
+  $("speedBtn").setAttribute("aria-pressed", String(on));
+  $("speedLegend").hidden = !on;
+  if (!on && hideBuses) setHideBuses(false); // speeds-only view ends with the overlay
+  wakeControls();
+  if (!playing && DATA) renderFrame(progress, 0.016);
+}
+
+function updateSpeedLegend() {
+  if (!speedOverlay) return;
+  const now = performance.now();
+  if (now - lastLegendMs < 350) return; // DOM writes throttled; canvas stays 60fps
+  lastLegendMs = now;
+  const el = $("speedStats");
+  if (!speedStats) { el.textContent = "measuring… (waiting for real GPS buses)"; return; }
+  el.textContent = `median ${speedStats.median.toFixed(0)} km/h · ${speedStats.pctSlow.toFixed(0)}% slow (<12) · ${speedStats.pctCrawl.toFixed(0)}% crawling (<6) · n=${speedStats.n}`;
 }
 
 function toggleMute() {
@@ -2946,6 +3316,9 @@ function endPointer(e) {
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
+$("speedBtn").addEventListener("click", () => setSpeedOverlay(!speedOverlay));
+$("hideBusesBtn").addEventListener("click", () => setHideBuses(!hideBuses));
+$("stopsBtn").addEventListener("click", () => setStopsOverlay(!stopsOverlay));
 $("volSlider").addEventListener("input", (e) => audio.setVolume(+e.target.value));
 $("rangeSelect").addEventListener("change", (e) => setRange(e.target.value));
 $("speedToggle").addEventListener("click", (e) => {
@@ -3150,21 +3523,8 @@ async function boot() {
     slices = DATA.slices;
     if (catRes.ok) LINE_CATALOG = await catRes.json();
 
-    computeMapProjection();
-    const raw = DATA.roads;
-    roads = new Array(raw.length / 5);
-    for (let i = 0, j = 0; i < raw.length; i += 5, j++) {
-      const x1 = toScreenX(raw[i + 1]), y1 = toScreenY(raw[i + 2]);
-      const x2 = toScreenX(raw[i + 3]), y2 = toScreenY(raw[i + 4]);
-      const len = Math.hypot(x2 - x1, y2 - y1) || 1;
-      roads[j] = { tier: raw[i], x1, y1, x2, y2, len, dx: (x2 - x1) / len, dy: (y2 - y1) / len };
-    }
-
-    buildRoadGraph();
-    prerenderRoadBases();
-
-    refreshCanvasFit();
-    resetCamera(); // centres Jerusalem on portrait cover-fit; no-op (0,0) on desktop
+    applyViewport(true); // sizes the canvas to the window + builds roads/graph/bases
+    resetCamera();
     setRange("week");
     initLinePicker();
     loadLightRail();   // Official GTFS 7-day Light Rail L1 & L3
